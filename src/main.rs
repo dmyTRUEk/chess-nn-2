@@ -20,7 +20,7 @@
 
 use std::cmp::Ordering;
 
-use chess::{ALL_SQUARES, Board, BoardBuilder, ChessMove, Color, Game, GameResult, MoveGen, Piece};
+use chess::{ALL_SQUARES, Action, Board, BoardBuilder, ChessMove, Color, Game, GameResult, MoveGen, Piece};
 use itertools::Itertools;
 use nalgebra::{DMatrix, DVector};
 use rand::{RngExt, rng, rngs::ThreadRng};
@@ -104,7 +104,7 @@ fn main() {
 		nns.into_iter().map(Player::NN)
 	);
 
-	let mut players: Vec<PlayerWithRating> = players.into_iter().map(PlayerWithRating::new).collect();
+	let mut players: Vec<PlayerWithRatingAndStats> = players.into_iter().map(PlayerWithRatingAndStats::new).collect();
 	let players_n_init = players.len();
 	println!("Number of players: {}", players.len());
 
@@ -119,10 +119,9 @@ fn main() {
 		println!();
 		print!("epoch {}/{}: ", epoch+1, training::EPOCHS); flush();
 
-		for player in players.iter_mut() {
-			// TODO: this could also work?
-			// *player = PlayerWithRating::new(player.player);
-			player.rating = training::DEFAULT_RATING;
+		for PlayerWithRatingAndStats { player: _, rating, stats } in players.iter_mut() {
+			*rating = training::DEFAULT_RATING;
+			*stats = PlayerInTournamentStats::new();
 		}
 
 		play_tournament(&mut players, training::PLAY_GAME_MOVES_LIMIT);
@@ -130,24 +129,69 @@ fn main() {
 		print!("ratings:"); players.iter().for_each(|p| print!(" {:.1}", p.rating)); println!();
 		print!("ratings (sorted):"); players.iter().sorted_by(|p1, p2| p2.rating.partial_cmp(&p1.rating).unwrap()).for_each(|p| print!(" {:.1}", p.rating)); println!();
 
-		{
-			let (best_player_i, best_player) = players.iter().enumerate().max_by(|(_i1,p1), (_i2,p2)| p2.rating.partial_cmp(&p1.rating).unwrap()).unwrap();
-			println!("best player ({:.1}): {}", best_player.rating, match &best_player.player {
-				Player::NN(nn) => format!("NN #{best_player_i} ({})", nn.name),
+		println!();
+
+		// TODO(refactor)
+		{ // best player
+			let title = "best";
+			let (player_i, player) = players.iter().enumerate().max_by(|(_i1,p1), (_i2,p2)| p1.rating.partial_cmp(&p2.rating).unwrap()).unwrap();
+			let name = match &player.player {
+				Player::NN(nn) => format!("NN #{player_i} ({})", nn.name),
 				Player::Algo(algo) => algo.get_name(),
 				Player::Human { name } => format!("human ({name})"),
-			});
+			};
+			let rating = player.rating;
+			let PlayerInTournamentStats { wins, loses, wins_by_points, loses_by_points, draws_by_points } = player.stats;
+			println!("{title} player ({rating:.1}): {name}, wins/loses: {wins}/{loses}, wins/loses by points: {wins_by_points}/{loses_by_points}, draws by points: {draws_by_points}");
 		}
-		{
-			let (worst_player_i, worst_player) = players.iter().enumerate().min_by(|(_i1,p1), (_i2,p2)| p2.rating.partial_cmp(&p1.rating).unwrap()).unwrap();
-			println!("worst player ({:.1}): {}", worst_player.rating, match &worst_player.player {
-				Player::NN(nn) => format!("NN #{worst_player_i} ({})", nn.name),
+		{ // second player
+			let title = "second";
+			let (player_i, player) = players.iter().enumerate().k_largest_by(2, |(_i1,p1), (_i2,p2)| p1.rating.partial_cmp(&p2.rating).unwrap()).last().unwrap();
+			let name = match &player.player {
+				Player::NN(nn) => format!("NN #{player_i} ({})", nn.name),
 				Player::Algo(algo) => algo.get_name(),
 				Player::Human { name } => format!("human ({name})"),
-			});
+			};
+			let rating = player.rating;
+			let PlayerInTournamentStats { wins, loses, wins_by_points, loses_by_points, draws_by_points } = player.stats;
+			println!("{title} player ({rating:.1}): {name}, wins/loses: {wins}/{loses}, wins/loses by points: {wins_by_points}/{loses_by_points}, draws by points: {draws_by_points}");
 		}
+		{ // worst player
+			let title = "worst";
+			let (player_i, player) = players.iter().enumerate().min_by(|(_i1,p1), (_i2,p2)| p1.rating.partial_cmp(&p2.rating).unwrap()).unwrap();
+			let name = match &player.player {
+				Player::NN(nn) => format!("NN #{player_i} ({})", nn.name),
+				Player::Algo(algo) => algo.get_name(),
+				Player::Human { name } => format!("human ({name})"),
+			};
+			let rating = player.rating;
+			let PlayerInTournamentStats { wins, loses, wins_by_points, loses_by_points, draws_by_points } = player.stats;
+			println!("{title} player ({rating:.1}): {name}, wins/loses: {wins}/{loses}, wins/loses by points: {wins_by_points}/{loses_by_points}, draws by points: {draws_by_points}");
+		}
+		println!();
 
 		players.sort_by(|p1, p2| p2.rating.partial_cmp(&p1.rating).unwrap());
+
+		{ // best vs self
+			let white = &players[0].player;
+			let black = &players[0].player;
+			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			println!("best vs self ({}):   {}", game_result.to_char(), game.to_uci());
+		}
+		println!();
+		{ // best vs second
+			let white = &players[0].player;
+			let black = &players[1].player;
+			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			println!("best vs second ({}):   {}", game_result.to_char(), game.to_uci());
+		}
+		println!();
+		{ // best vs worst
+			let white = &players[0].player;
+			let black = &players[players.len()-1].player;
+			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			println!("best vs worst ({}):   {}", game_result.to_char(), game.to_uci());
+		}
 
 		let evolution_rate = training::EVOLUTION_RATE_INIT * exp(-evolution_rate_drop_speed * (epoch as f) / (training::EPOCHS as f - 1.));
 		println!("evolving with evo_rate = {evolution_rate:.4} ...");
@@ -159,7 +203,7 @@ fn main() {
 			players[i] = if player_to_clone.player.is_nn() {
 				player_to_clone.clone()
 			} else {
-				PlayerWithRating::new(Player::NN(NN::new_with_rng(nn::INNER_LAYERS_SIZES, &mut rng)))
+				PlayerWithRatingAndStats::new(Player::NN(NN::new_with_rng(nn::INNER_LAYERS_SIZES, &mut rng)))
 			};
 			// evolution:
 			let k: f = rng.random_range(1. .. 10.);
@@ -167,9 +211,12 @@ fn main() {
 			let evo_rate = evo_rate.clamp(0., 1.);
 			evolve_player(&mut players[i].player, evo_rate, &mut rng);
 		}
-		players[players_n-1] = PlayerWithRating::new(Player::NN(NN::new_with_rng(nn::INNER_LAYERS_SIZES, &mut rng)));
+		players[players_n-1] = PlayerWithRatingAndStats::new(Player::NN(NN::new_with_rng(nn::INNER_LAYERS_SIZES, &mut rng)));
 
 		assert_eq!(players_n_init, players.len());
+
+		println!();
+		println!();
 	}
 }
 
@@ -186,7 +233,7 @@ fn evolve_player(player: &mut Player, evolution_rate: f, rng: &mut ThreadRng) {
 
 
 
-fn play_tournament(players: &mut [PlayerWithRating], move_limit: u32) {
+fn play_tournament(players: &mut [PlayerWithRatingAndStats], move_limit: u32) {
 	let players_n = players.len();
 	match nn::COMPUTE_UNIT {
 		ComputeUnit::CpuOne => {
@@ -194,7 +241,8 @@ fn play_tournament(players: &mut [PlayerWithRating], move_limit: u32) {
 				for black_i in 0..players_n {
 					if white_i == black_i { continue }
 					let [white, black] = players.get_disjoint_mut([white_i, black_i]).unwrap();
-					let game_result = play_game(&white.player, &black.player, move_limit);
+					let (game_result, _) = play_game(&white.player, &black.player, move_limit, false);
+					update_stats(&mut white.stats, &mut black.stats, game_result);
 					update_ratings(&mut white.rating, &mut black.rating, game_result);
 					print(game_result.to_char());
 				}
@@ -206,12 +254,12 @@ fn play_tournament(players: &mut [PlayerWithRating], move_limit: u32) {
 			unimplemented!()
 		}
 		ComputeUnit::CpuAll => {
-			let players_ref: &[PlayerWithRating] = &*players; // this fixes bc `&mut T` is not Copy (need for move), but `&T` is Copy (src: chatgpt)
+			let players_ref: &[PlayerWithRatingAndStats] = &*players; // this fixes bc `&mut T` is not Copy (need for move), but `&T` is Copy (src: chatgpt)
 			let mut games: Vec<(usize, usize, GameResult_)> = (0..players_n).cartesian_product(0..players_n)
 				.par_bridge()
 				.map(|(white_i, black_i)| {
 					if white_i == black_i { return None }
-					let game_result = play_game(&players_ref[white_i].player, &players_ref[black_i].player, move_limit);
+					let (game_result, _) = play_game(&players_ref[white_i].player, &players_ref[black_i].player, move_limit, false);
 					print(game_result.to_char());
 					Some((white_i, black_i, game_result))
 				})
@@ -223,6 +271,7 @@ fn play_tournament(players: &mut [PlayerWithRating], move_limit: u32) {
 				// println!("{white_i}, {black_i}, {game_result:?}");
 				if white_i == black_i { unreachable!() }
 				let [white, black] = players.get_disjoint_mut([white_i, black_i]).unwrap();
+				update_stats(&mut white.stats, &mut black.stats, game_result);
 				update_ratings(&mut white.rating, &mut black.rating, game_result);
 				print!("{}", game_result.to_char());
 				// println!("CHAR: {}", game_result.to_char());
@@ -271,11 +320,42 @@ fn update_ratings(white: &mut f, black: &mut f, game_result: GameResult_) {
 	}
 }
 
+fn update_stats(white: &mut PlayerInTournamentStats, black: &mut PlayerInTournamentStats, game_result: GameResult_) {
+	match game_result {
+		GameResult_::WhiteWins => {
+			white.wins += 1;
+			black.loses += 1;
+		}
+		GameResult_::BlackWins => {
+			black.wins += 1;
+			white.loses += 1;
+		}
+		GameResult_::WhiteWinsByPoints => {
+			white.wins_by_points += 1;
+			black.loses_by_points += 1;
+		}
+		GameResult_::BlackWinsByPoints => {
+			black.wins_by_points += 1;
+			white.loses_by_points += 1;
+		}
+		GameResult_::DrawByPoints => {
+			white.draws_by_points += 1;
+			black.draws_by_points += 1;
+		}
+	}
+}
+
 fn calc_elo_rating_delta(winner: f, loser: f) -> f {
 	100. / ( 1. + 10_f32.powf( (winner-loser) / 400. ) )
 }
 
-fn play_game(white: &Player, black: &Player, move_limit: u32) -> GameResult_ {
+#[derive(Debug, Clone)]
+struct PlayerInTournamentStats { wins: u32, loses: u32, wins_by_points: u32, loses_by_points: u32, draws_by_points: u32 }
+impl PlayerInTournamentStats {
+	fn new() -> Self { Self { wins: 0, loses: 0, wins_by_points: 0, loses_by_points: 0, draws_by_points: 0 } }
+}
+
+fn play_game(white: &Player, black: &Player, move_limit: u32, get_game: bool) -> (GameResult_, Option<Game>) {
 	let mut rng = rng();
 	let mut game = Game::new(); // TODO!(optim): dont use Game, use Board directly
 	let mut move_number: u32 = 0;
@@ -301,16 +381,18 @@ fn play_game(white: &Player, black: &Player, move_limit: u32) -> GameResult_ {
 		GR::WhiteResigns | GR::BlackCheckmates => Some(GameResult_::BlackWins),
 		GR::Stalemate | GR::DrawAccepted | GR::DrawDeclared => None,
 	};
-	if let Some(winner) = winner {
-		return winner
-	}
-	let board = game.current_position();
-	let points = board.count_material_delta();
-	match points.partial_cmp(&0.).unwrap() {
-		Ordering::Less => GameResult_::BlackWinsByPoints,
-		Ordering::Greater => GameResult_::WhiteWinsByPoints,
-		Ordering::Equal => GameResult_::DrawByPoints,
-	}
+	let gr = if let Some(winner) = winner {
+		winner
+	} else {
+		let board = game.current_position();
+		let points = board.count_material_delta();
+		match points.partial_cmp(&0.).unwrap() {
+			Ordering::Less => GameResult_::BlackWinsByPoints,
+			Ordering::Equal => GameResult_::DrawByPoints,
+			Ordering::Greater => GameResult_::WhiteWinsByPoints,
+		}
+	};
+	(gr, get_game.then(|| game))
 }
 
 pub trait CountMaterialDelta { fn count_material_delta(self) -> f; }
@@ -470,10 +552,10 @@ impl Player {
 }
 
 #[derive(Clone)]
-struct PlayerWithRating { player: Player, rating: f }
-impl PlayerWithRating {
-	pub fn new(player: Player) -> PlayerWithRating {
-		Self { player, rating: training::DEFAULT_RATING }
+struct PlayerWithRatingAndStats { player: Player, rating: f, stats: PlayerInTournamentStats }
+impl PlayerWithRatingAndStats {
+	pub fn new(player: Player) -> PlayerWithRatingAndStats {
+		Self { player, rating: training::DEFAULT_RATING, stats: PlayerInTournamentStats::new() }
 	}
 }
 // #[derive(Debug, Clone, Copy)]
@@ -590,6 +672,7 @@ fn evolve_weight(weight: &mut f, rng: &mut ThreadRng) {
 
 fn evolve_value(v: &mut f, rng: &mut ThreadRng) {
 	match_random_weighted! {rng,
+		// */
 		0.01 => { *v *= -1.; },
 		1. => { *v *= 2.; },
 		1. => { *v /= 2.; },
@@ -599,9 +682,27 @@ fn evolve_value(v: &mut f, rng: &mut ThreadRng) {
 		2. => { *v /= 1.1; },
 		1. => { *v *= 1.01; },
 		1. => { *v /= 1.01; },
-		// TODO: +-
-		// TODO: +- sqrt of val
-		// TODO: +- ln of val
+		// +-
+		0.2 => { *v += 0.1; },
+		0.2 => { *v -= 0.1; },
+		0.5 => { *v += 0.01; },
+		0.5 => { *v -= 0.01; },
+		0.2 => { *v += 0.001; },
+		0.2 => { *v -= 0.001; },
+		0.1 => { *v += 0.0001; },
+		0.1 => { *v -= 0.0001; },
+		0.01 => { *v += 0.3; },
+		0.01 => { *v -= 0.3; },
+		// +- sqrt
+		0.001 => { *v += sqrt(abs(*v)); },
+		0.001 => { *v -= sqrt(abs(*v)); },
+		0.001 => { *v += sqrt(1. / abs(*v)); },
+		0.001 => { *v -= sqrt(1. / abs(*v)); },
+		// +- ln
+		0.0001 => { *v += sqrt(ln(*v)); },
+		0.0001 => { *v -= sqrt(ln(*v)); },
+		0.0001 => { *v += sqrt(1. / ln(*v)); },
+		0.0001 => { *v -= sqrt(1. / ln(*v)); },
 	}
 }
 
@@ -748,6 +849,31 @@ enum ComputeUnit {
 	CpuAll,
 	Gpu,
 }
+
+
+
+
+
+pub trait ToUci { fn to_uci(&self) -> String; }
+impl ToUci for Game {
+	fn to_uci(&self) -> String {
+		let moves_strs: Vec<String> = self.actions().into_iter().flat_map(|action| {
+			match action {
+				Action::MakeMove(move_) => Some(move_.to_string()),
+				// Action::OfferDraw(Color) => todo!(),
+				// Action::AcceptDraw => todo!(),
+				// Action::DeclareDraw => todo!(),
+				// Action::Resign(Color) => todo!(),
+				_ => None
+			}
+		}).collect();
+		moves_strs.join(" ")
+	}
+}
+
+
+
+
 
 
 
