@@ -20,8 +20,9 @@ use std::{cmp::Ordering, iter};
 
 use chess::{ALL_SQUARES, Action, Board, BoardBuilder, ChessMove, Color, Game, GameResult, MoveGen, Piece};
 use itertools::Itertools;
+use nalgebra::{DMatrix, DVector};
 use rand::{RngExt, rng, rngs::ThreadRng};
-use rayon::iter::{ParallelBridge, ParallelIterator};
+use rayon::{iter::{ParallelBridge, ParallelIterator}, result};
 
 mod extensions;
 mod math_aliases;
@@ -39,7 +40,7 @@ mod training {
 	use super::*;
 
 	pub const EPOCHS: u32 = 10;
-	pub const NNS_NUMBER: u32 = 3; // it's better be multiple of number of cores/threads on your machine? or else...
+	pub const NNS_NUMBER: u32 = 6; // it's better be multiple of number of cores/threads on your machine? or else...
 	pub const TOURNAMENTS_NUMBER: u32 = 10;
 	pub const PLAY_GAME_MOVES_LIMIT: u32 = 200;
 
@@ -58,7 +59,7 @@ mod nn {
 	pub const ACTIVATION_FN: ActivationFn = ActivationFn::LeakyReLU_01;
 	// pub const ACTIVATION_FN: ActivationFn = ActivationFn::LeakyReLU_001;
 
-	pub const INNER_LAYERS_SIZES: &[u32] = &[100, 30, 10, 5];
+	pub const INNER_LAYERS_SIZES: &[u32] = &[300, 100, 30, 10, 5];
 
 	// pub const NUMBER_OF_DEPTH_CHANNELS: NumberOfDepthChannels = NumberOfDepthChannels::Two;
 	// pub const NUMBER_OF_DEPTH_CHANNELS: NumberOfDepthChannels = NumberOfDepthChannels::Three { use_opposite_signs: false };
@@ -74,8 +75,8 @@ mod nn {
 
 	pub const W_MIN: f = -1.;
 	pub const W_MAX: f =  1.;
-	pub const S_MIN: f = -1.;
-	pub const S_MAX: f =  1.;
+	pub const S_MIN: f = -10.;
+	pub const S_MAX: f =  10.;
 }
 
 
@@ -86,9 +87,6 @@ fn main() {
 	debug_assert_eq!(1, nn::OUTPUT_SIZE);
 
 	let mut rng = rng();
-	let nns = Vec::from_fn(training::NNS_NUMBER as usize, |_i| NN::new_with_rng(nn::INNER_LAYERS_SIZES, &mut rng));
-	assert_eq!(training::NNS_NUMBER, nns.len() as u32);
-	println!("Created {} NNs", training::NNS_NUMBER);
 
 	let mut players = vec![
 		Player::Algo(AlgoPlayer::RandomMover),
@@ -96,9 +94,14 @@ fn main() {
 		// Player::Algo(AlgoPlayer::PiecesFreedom),
 		// Player::Algo(AlgoPlayer::PiecesSumAndFreedom { sum_weight: todo!(), freedom_weight: todo!() }),
 	];
+
+	let nns = Vec::from_fn(training::NNS_NUMBER as usize, |_i| NN::new_with_rng(nn::INNER_LAYERS_SIZES, &mut rng));
+	assert_eq!(training::NNS_NUMBER, nns.len() as u32);
+	println!("Created {} NNs", training::NNS_NUMBER);
 	players.extend(
-		nns.into_iter().map(|nn| Player::NN(nn))
+		nns.into_iter().map(Player::NN)
 	);
+
 	let mut players: Vec<PlayerWithRating> = players.into_iter().map(PlayerWithRating::new).collect();
 
 	println!("Number of players: {}", players.len());
@@ -118,9 +121,9 @@ fn main() {
 		print!("ratings (sorted):"); players.iter().sorted_by(|p1, p2| p2.rating.partial_cmp(&p1.rating).unwrap()).for_each(|p| print!(" {:.1}", p.rating)); println!();
 		let (best_player_i, best_player) = players.iter().enumerate().max_by(|(i1,p1), (i2,p2)| p2.rating.partial_cmp(&p1.rating).unwrap()).unwrap();
 		println!("best player ({:.1}): {}", best_player.rating, match &best_player.player {
-			Player::Human => "human".to_string(),
-			Player::Algo(algo) => format!("{algo:?}"),
 			Player::NN(_nn) => format!("NN #{best_player_i}"),
+			Player::Algo(algo) => format!("{algo:?}"),
+			Player::Human => "human".to_string(),
 		});
 		let evolution_rate = training::EVOLUTION_RATE_INIT * exp(-evolution_rate_drop_speed * (epoch as f) / (training::EPOCHS as f - 1.));
 		println!("evolving with evo_rate = {evolution_rate:.4} ...");
@@ -142,11 +145,9 @@ fn evolve_players(players: &mut [PlayerWithRating], evolution_rate: f, rng: &mut
 fn evolve_player(player: &mut Player, evolution_rate: f, rng: &mut ThreadRng) {
 	use Player::*;
 	match player {
-		NN(nn) => {
-			nn.evolve(evolution_rate, rng);
-		}
-		Human => {}
+		NN(nn) => { nn.evolve(evolution_rate, rng); }
 		Algo(_) => {}
+		Human => {}
 	}
 }
 
@@ -403,16 +404,16 @@ impl NumberOfDepthChannels {
 #[repr(u8)]
 enum Player {
 	NN(NN),
-	Human,
 	Algo(AlgoPlayer),
+	Human,
 }
 impl Player {
 	fn select_move(&self, board: &Board, rng: &mut ThreadRng) -> ChessMove {
 		use Player::*;
 		match self {
 			NN(nn) => nn.select_move(board),
-			Human => todo!(),
 			Algo(algo) => algo.select_move(board, rng),
+			Human => todo!(),
 		}
 	}
 }
@@ -426,6 +427,7 @@ impl PlayerWithRating {
 // #[derive(Debug, Clone, Copy)]
 // struct Rating(f);
 // impl Rating { fn new() -> Self { Self(training::DEFAULT_RATING) } }
+
 
 struct NN { layers: Vec<NNLayer> }
 impl NN {
@@ -458,9 +460,9 @@ impl NN {
 		nn_output
 	}
 	fn eval_input(&self, input: Vec<f>) -> f {
-		let mut v = input;
+		let mut v: DVector<f> = input.into();
 		for layer in self.layers.iter() {
-			v = layer.eval(&v);
+			v = layer.eval(v);
 		}
 		debug_assert_eq!(nn::OUTPUT_SIZE, v.len() as u32);
 		v[0]
@@ -472,69 +474,69 @@ impl NN {
 	}
 }
 
-struct NNLayer { neurons: Vec<Neuron> }
+struct NNLayer { weights: DMatrix<f>, biases: DVector<f> }
 impl NNLayer {
 	fn new_with_rng(size_in: u32, size_out: u32, rng: &mut ThreadRng) -> Self {
-		Self { neurons: Vec::from_fn(size_out as usize, |_i| Neuron::new_with_rng(size_in, rng)) }
-	}
-	fn eval(&self, input: &[f]) -> Vec<f> {
-		self.neurons.iter().map(|neuron| neuron.eval(input)).collect()
-	}
-	fn evolve(&mut self, evolution_rate: f, rng: &mut ThreadRng) {
-		for neuron in self.neurons.iter_mut() {
-			neuron.evolve(evolution_rate, rng);
-		}
-	}
-}
-
-struct Neuron { weights: Vec<f>, bias: f }
-impl Neuron {
-	fn new_with_rng(n: u32, rng: &mut ThreadRng) -> Self {
+		// TODO(optim): dont use `random_range` repeatedly, instead create uniform distribution and multi sample it
 		Self {
-			weights: Vec::from_fn(n as usize, |_i| rng.random_range(nn::W_MIN .. nn::W_MAX)),
-			bias: rng.random_range(nn::S_MIN .. nn::S_MAX),
+			weights: DMatrix::from_fn(
+				size_out as usize,
+				size_in as usize,
+				|_i, _j| rng.random_range(nn::W_MIN .. nn::W_MAX)
+			),
+			biases: DVector::from_fn(
+				size_out as usize,
+				|_i, _| rng.random_range(nn::S_MIN .. nn::S_MAX) // TODO?: `S_MAX` dependant on `size_out`
+			),
 		}
 	}
-	fn eval(&self, input: &[f]) -> f {
-		let wi: f = self.weights.iter().zip_eq(input)
-			.map(|(w, i)| w * i)
-			.sum();
-		let sum = wi + self.bias;
-		nn::ACTIVATION_FN.eval(sum)
+	fn eval(&self, input: DVector<f>) -> DVector<f> {
+		let sums = &self.weights * input + &self.biases;
+		sums.map(|sum| nn::ACTIVATION_FN.eval(sum))
 	}
 	fn evolve(&mut self, evolution_rate: f, rng: &mut ThreadRng) {
-		// TODO(optim)
-		if rng.random_bool(evolution_rate as f64) {
-			let bias = &mut self.bias;
-			match_random_weighted! {rng,
-				0.01 => { *bias *= -1.; },
-				1. => { *bias *= 2.; },
-				1. => { *bias /= 2.; },
-				2. => { *bias *= 1.4; },
-				2. => { *bias /= 1.4; },
-				2. => { *bias *= 1.1; },
-				2. => { *bias /= 1.1; },
-				1. => { *bias *= 1.01; },
-				1. => { *bias /= 1.01; },
+		// TODO(optim): generate indices to evolve
+		for bias in self.biases.iter_mut() {
+			if rng.random_bool(evolution_rate as f64) {
+				evolve_bias(bias, rng);
 			}
 		}
 		for weight in self.weights.iter_mut() {
 			if rng.random_bool(evolution_rate as f64) {
-				match_random_weighted! {rng,
-					0.01 => { *weight *= -1.; },
-					1. => { *weight *= 2.; },
-					1. => { *weight /= 2.; },
-					2. => { *weight *= 1.4; },
-					2. => { *weight /= 1.4; },
-					2. => { *weight *= 1.1; },
-					2. => { *weight /= 1.1; },
-					1. => { *weight *= 1.01; },
-					1. => { *weight /= 1.01; },
-				}
+				evolve_weight(weight, rng);
 			}
 		}
 	}
 }
+
+fn evolve_bias(bias: &mut f, rng: &mut ThreadRng) {
+	evolve_value(bias, rng);
+}
+
+fn evolve_weight(weight: &mut f, rng: &mut ThreadRng) {
+	evolve_value(weight, rng);
+}
+
+fn evolve_value(v: &mut f, rng: &mut ThreadRng) {
+	match_random_weighted! {rng,
+		0.01 => { *v *= -1.; },
+		1. => { *v *= 2.; },
+		1. => { *v /= 2.; },
+		2. => { *v *= 1.4; },
+		2. => { *v /= 1.4; },
+		2. => { *v *= 1.1; },
+		2. => { *v /= 1.1; },
+		1. => { *v *= 1.01; },
+		1. => { *v /= 1.01; },
+		// TODO: +-
+		// TODO: +- sqrt of val
+		// TODO: +- ln of val
+	}
+}
+
+
+
+
 
 // TODO: test
 fn board_to_vector_for_nn(board: &Board) -> Vec<f> {
