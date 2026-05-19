@@ -21,6 +21,7 @@ use std::{cmp::Ordering, iter};
 use chess::{ALL_SQUARES, Action, Board, BoardBuilder, ChessMove, Color, Game, GameResult, MoveGen, Piece};
 use itertools::Itertools;
 use rand::{RngExt, rng, rngs::ThreadRng};
+use rayon::iter::{ParallelBridge, ParallelIterator};
 
 mod extensions;
 mod math_aliases;
@@ -68,7 +69,8 @@ mod nn {
 	pub const INPUT_SIZE: u32 = NUMBER_OF_DEPTH_CHANNELS.to_u32() * INPUT_SIZE_PER_COLOR_CHANNEL; // 768 or 1152 or 1536
 	pub const OUTPUT_SIZE: u32 = 1;
 
-	pub const COMPUTE_UNIT: ComputeUnit = ComputeUnit::CpuOne;
+	// pub const COMPUTE_UNIT: ComputeUnit = ComputeUnit::CpuOne;
+	pub const COMPUTE_UNIT: ComputeUnit = ComputeUnit::CpuAll;
 
 	pub const W_MIN: f = -1.;
 	pub const W_MAX: f =  1.;
@@ -170,7 +172,29 @@ fn play_tournament(players: &mut [PlayerWithRating], move_limit: u32) {
 			unimplemented!()
 		}
 		ComputeUnit::CpuAll => {
-			todo!()
+			let players_ref: &[PlayerWithRating] = &*players; // this fixes bc `&mut T` is not Copy (need for move), but `&T` is Copy (src: chatgpt)
+			let mut games: Vec<(usize, usize, GameResult_)> = (0..players_n).cartesian_product(0..players_n)
+				.par_bridge()
+				.map(|(white_i, black_i)| {
+					if white_i == black_i { return None }
+					let game_result = play_game(&players_ref[white_i].player, &players_ref[black_i].player, move_limit);
+					print(game_result.to_char());
+					Some((white_i, black_i, game_result))
+				})
+				.flatten() // remove `None`s
+				.collect();
+			games.sort_unstable_by_key(|g| (g.0, g.1));
+			println!();
+			for (i, (white_i, black_i, game_result)) in games.into_iter().enumerate() {
+				// println!("{white_i}, {black_i}, {game_result:?}");
+				if white_i == black_i { unreachable!() }
+				let [white, black] = players.get_disjoint_mut([white_i, black_i]).unwrap();
+				update_ratings(&mut white.rating, &mut black.rating, game_result);
+				print!("{}", game_result.to_char());
+				// println!("CHAR: {}", game_result.to_char());
+				if i % (players_n - 1) == players_n - 2 { print(" "); }
+			}
+			println!();
 		}
 		ComputeUnit::Gpu => {
 			todo!("use same as CpuOne?")
