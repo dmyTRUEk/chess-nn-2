@@ -198,7 +198,7 @@ fn main() {
 
 		{ // best vs self
 			let white = &players[0].player;
-			let black = &players[0].player;
+			let black = white;
 			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
 			println!("best vs self ({}):   {}", game_result.to_char(), game.to_uci());
 		}
@@ -217,28 +217,21 @@ fn main() {
 			println!("best vs worst ({}):   {}", game_result.to_char(), game.to_uci());
 		}
 		println!();
-		{ // best vs best nn
-			let white = &players[0].player;
-			let black = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
-			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
-			println!("best vs best NN ({}):   {}", game_result.to_char(), game.to_uci());
-		}
-		println!();
-		{ // best nn vs worst
+		{ // best NN vs best
 			let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
-			let black = &players[players.len()-1].player;
+			let black = &players[0].player;
 			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
-			println!("best NN vs worst ({}):   {}", game_result.to_char(), game.to_uci());
+			println!("best NN vs best ({}):   {}", game_result.to_char(), game.to_uci());
 		}
 		println!();
-		{ // best nn vs worst nn
+		{ // best NN vs self
 			let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
-			let black = &players.iter().rev().find(|p| p.player.is_nn()).unwrap().player;
+			let black = white;
 			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
-			println!("best NN vs worst NN ({}):   {}", game_result.to_char(), game.to_uci());
+			println!("best NN vs self ({}):   {}", game_result.to_char(), game.to_uci());
 		}
 		println!();
-		{ // best nn vs second best nn
+		{ // best NN vs second best NN
 			let [white, black] = players.iter()
 				.filter(|p| p.player.is_nn())
 				.k_largest_by(2, |p1, p2| p1.rating.partial_cmp(&p2.rating).unwrap())
@@ -246,6 +239,20 @@ fn main() {
 				.collect::<Vec<_>>()[..] else { unreachable!() };
 			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
 			println!("best NN vs second best NN ({}):   {}", game_result.to_char(), game.to_uci());
+		}
+		println!();
+		{ // best NN vs worst NN
+			let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
+			let black = &players.iter().rev().find(|p| p.player.is_nn()).unwrap().player;
+			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			println!("best NN vs worst NN ({}):   {}", game_result.to_char(), game.to_uci());
+		}
+		println!();
+		{ // best NN vs worst
+			let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
+			let black = &players[players.len()-1].player;
+			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			println!("best NN vs worst ({}):   {}", game_result.to_char(), game.to_uci());
 		}
 
 		println!();
