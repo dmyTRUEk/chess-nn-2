@@ -15,6 +15,7 @@
 	clippy::let_and_return,
 	clippy::manual_is_multiple_of,
 	clippy::map_flatten,
+	clippy::print_literal,
 	clippy::upper_case_acronyms,
 )]
 
@@ -23,15 +24,17 @@ use std::cmp::Ordering;
 use chess::{ALL_SQUARES, Action, Board, BoardBuilder, ChessMove, Color, Game, GameResult, MoveGen, Piece};
 use itertools::Itertools;
 use nalgebra::{DMatrix, DVector};
-use rand::{RngExt, rng, rngs::ThreadRng};
+use rand::{RngExt, rng, rngs::ThreadRng, seq::SliceRandom};
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
 mod extensions;
+mod math;
 mod math_aliases;
 mod typesafe_rng;
 mod utils_io;
 
 use extensions::*;
+use math::*;
 use math_aliases::*;
 use typesafe_rng::*;
 use utils_io::*;
@@ -62,6 +65,7 @@ mod nn {
 	// pub const ACTIVATION_FN: ActivationFn = ActivationFn::LeakyReLU_001;
 
 	pub const INNER_LAYERS_SIZES: &[u32] = &[300, 100, 30, 10, 5];
+	// pub const INNER_LAYERS_SIZES: &[u32] = &[30, 10, 5];
 
 	// pub const NUMBER_OF_DEPTH_CHANNELS: NumberOfDepthChannels = NumberOfDepthChannels::Two;
 	// pub const NUMBER_OF_DEPTH_CHANNELS: NumberOfDepthChannels = NumberOfDepthChannels::Three { use_opposite_signs: false };
@@ -90,14 +94,52 @@ fn main() {
 
 	let mut rng = rng();
 
-	let mut players = vec![
-		Player::Algo(AlgoPlayer::RandomMover),
-		// Player::Algo(AlgoPlayer::PiecesSum),
-		// Player::Algo(AlgoPlayer::PiecesFreedom),
-		// Player::Algo(AlgoPlayer::PiecesSumAndFreedom { sum_weight: todo!(), freedom_weight: todo!() }),
-	];
 
-	let nns = Vec::from_fn(training::NNS_NUMBER as usize, |_i| NN::new_with_rng(nn::INNER_LAYERS_SIZES, &mut rng));
+	let algo_players = { use AlgoPlayer::*; [
+		RandomMover,
+		MiddleMover,
+		MaterialDelta,
+		MaterialDeltaSTM,
+		NegMaterialDelta,
+		NegMaterialDeltaSTM,
+		PiecesFreedom,
+		PiecesFreedomSTM,
+		NegPiecesFreedom,
+		NegPiecesFreedomSTM,
+		PiecesFreedomDiff,
+		PiecesFreedomDiffSTM,
+		NegPiecesFreedomDiff,
+		NegPiecesFreedomDiffSTM,
+		AlgoPlayer::mix_new_random(&mut rng), // one to survive
+		AlgoPlayer::mix_new_random(&mut rng), // and one to evolve
+		AlgoPlayer::mix_uss_new_random(&mut rng),
+		AlgoPlayer::mix_uss_new_random(&mut rng),
+	]};
+
+	let mut players = algo_players.map(Player::Algo).to_vec();
+
+	// {
+	// 	let fen = (
+	// 		// "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" // init
+	// 		// "rn2kb1r/ppp1pppp/5n2/3P1B2/8/2N2N2/PPPQ1PPP/R1B1K2R b KQkq - 0 7" // white winning, +11, black to move
+	// 		// "rn2kb1r/1pp1pppp/p4n2/3P1B2/8/2N2N2/PPPQ1PPP/R1B1K2R w KQkq - 0 8" // white winning, +11, white to move
+	// 		// "r1b1kbnr/pppp1ppp/8/4q3/3nP3/8/PPP2PPP/RN2K2R w KQkq - 1 9" // black winning, -16.5, white to move
+	// 		"r1b1kbnr/pppp1ppp/8/4q3/3nP3/8/PPPN1PPP/R3K2R b KQkq - 2 9" // black winning, -16.5, black to move
+	// 		// "rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq - 1 1"
+	// 		// "rnbqkbnr/1ppppppp/8/p7/8/7N/PPPPPPPP/RNBQKBR1 b Qkq - 1 2"
+	// 		// "rnbqkb1r/pppppppp/5n2/8/8/6PN/PPPPPP1P/RNBQKB1R b KQkq - 0 2"
+	// 		// "r1bqkbnr/8/n7/ppppppNp/8/8/PPPPPPPP/RNBQKBR1 w Qkq - 10 14"
+	// 	);
+	// 	let board = Board::from_fen(fen.to_string()).unwrap();
+	// 	dbg!(AlgoPlayer::PiecesSum.eval_board(&board));
+	// 	dbg!(AlgoPlayer::PiecesFreedom.eval_board(&board));
+	// 	dbg!(AlgoPlayer::PiecesSumAndFreedom { sum_weight: 0.5, freedom_weight: 0.5 }.eval_board(&board));
+	// 	dbg!(AlgoPlayer::PiecesSumAndFreedomUnderSignedSqrt { sum_weight: 0.5, freedom_weight: 0.5 }.eval_board(&board));
+	// 	println!();
+	// }
+	// return;
+
+	let nns = Vec::from_fn(training::NNS_NUMBER as usize, |_i| NN::new_random(nn::INNER_LAYERS_SIZES, &mut rng));
 	assert_eq!(training::NNS_NUMBER, nns.len() as u32);
 	println!("Created {} NNs", training::NNS_NUMBER);
 	players.extend(
@@ -108,6 +150,7 @@ fn main() {
 	let players_n_init = players.len();
 	println!("Number of players: {}", players.len());
 
+	// TODO(feat): exp_k aka steepness: exp(k * ...)
 	// erfinal = erinit * exp(-erdrop)  =>
 	// erfinal/erinit = exp(-erdrop)  =>
 	// ln(erfinal/erinit) = -erdrop  =>
@@ -117,60 +160,34 @@ fn main() {
 
 	for epoch in 0..training::EPOCHS {
 		println!();
-		print!("epoch {}/{}: ", epoch+1, training::EPOCHS); flush();
+		println!("{dashes} EPOCH {}/{} {dashes}", epoch+1, training::EPOCHS, dashes="-".repeat(42));
+		println!();
 
 		for PlayerWithRatingAndStats { player: _, rating, stats } in players.iter_mut() {
 			*rating = training::DEFAULT_RATING;
 			*stats = PlayerInTournamentStats::new();
 		}
 
+		players.shuffle(&mut rng);
+
 		play_tournament(&mut players, training::PLAY_GAME_MOVES_LIMIT);
 
-		print!("ratings:"); players.iter().for_each(|p| print!(" {:.1}", p.rating)); println!();
-		print!("ratings (sorted):"); players.iter().sorted_by(|p1, p2| p2.rating.partial_cmp(&p1.rating).unwrap()).for_each(|p| print!(" {:.1}", p.rating)); println!();
-
 		println!();
 
-		// TODO(refactor)
-		{ // best player
-			let title = "best";
-			let (player_i, player) = players.iter().enumerate().max_by(|(_i1,p1), (_i2,p2)| p1.rating.partial_cmp(&p2.rating).unwrap()).unwrap();
-			let name = match &player.player {
-				Player::NN(nn) => format!("NN #{player_i} ({})", nn.name),
-				Player::Algo(algo) => algo.get_name(),
-				Player::Human { name } => format!("human ({name})"),
-			};
-			let rating = player.rating;
-			let PlayerInTournamentStats { wins, loses, wins_by_points, loses_by_points, draws_by_points } = player.stats;
-			println!("{title} player ({rating:.1}): {name}, wins/loses: {wins}/{loses}, wins/loses by points: {wins_by_points}/{loses_by_points}, draws by points: {draws_by_points}");
-		}
-		{ // second player
-			let title = "second";
-			let (player_i, player) = players.iter().enumerate().k_largest_by(2, |(_i1,p1), (_i2,p2)| p1.rating.partial_cmp(&p2.rating).unwrap()).last().unwrap();
-			let name = match &player.player {
-				Player::NN(nn) => format!("NN #{player_i} ({})", nn.name),
-				Player::Algo(algo) => algo.get_name(),
-				Player::Human { name } => format!("human ({name})"),
-			};
-			let rating = player.rating;
-			let PlayerInTournamentStats { wins, loses, wins_by_points, loses_by_points, draws_by_points } = player.stats;
-			println!("{title} player ({rating:.1}): {name}, wins/loses: {wins}/{loses}, wins/loses by points: {wins_by_points}/{loses_by_points}, draws by points: {draws_by_points}");
-		}
-		{ // worst player
-			let title = "worst";
-			let (player_i, player) = players.iter().enumerate().min_by(|(_i1,p1), (_i2,p2)| p1.rating.partial_cmp(&p2.rating).unwrap()).unwrap();
-			let name = match &player.player {
-				Player::NN(nn) => format!("NN #{player_i} ({})", nn.name),
-				Player::Algo(algo) => algo.get_name(),
-				Player::Human { name } => format!("human ({name})"),
-			};
-			let rating = player.rating;
-			let PlayerInTournamentStats { wins, loses, wins_by_points, loses_by_points, draws_by_points } = player.stats;
-			println!("{title} player ({rating:.1}): {name}, wins/loses: {wins}/{loses}, wins/loses by points: {wins_by_points}/{loses_by_points}, draws by points: {draws_by_points}");
-		}
-		println!();
+		players.sort_by(|p1, p2| p1.rating.partial_cmp(&p2.rating).unwrap());
+		players.reverse();
 
-		players.sort_by(|p1, p2| p2.rating.partial_cmp(&p1.rating).unwrap());
+		println!("rating{t}name{spaces}wins/loses, wins/loses bp, draws bp", t='\t', spaces=" ".repeat(23));
+		for player in players.iter().rev() {
+			let rating = player.rating;
+			let name = player.player.name();
+			let PlayerInTournamentStats { wins, loses, wins_by_points, loses_by_points, draws_by_points } = player.stats;
+			// let stats = format!("wins/loses: {wins}/{loses}, wins/loses by points: {wins_by_points}/{loses_by_points}, draws by points: {draws_by_points}");
+			let stats = format!("{wins}/{loses}, {wins_by_points}/{loses_by_points}, {draws_by_points}");
+			println!("{rating:.1}:\t{name:24}   {stats}");
+		}
+
+		println!();
 
 		{ // best vs self
 			let white = &players[0].player;
@@ -192,44 +209,122 @@ fn main() {
 			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
 			println!("best vs worst ({}):   {}", game_result.to_char(), game.to_uci());
 		}
+		println!();
+		{ // best vs best nn
+			let white = &players[0].player;
+			let black = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
+			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			println!("best vs best NN ({}):   {}", game_result.to_char(), game.to_uci());
+		}
+		println!();
+		{ // best nn vs worst
+			let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
+			let black = &players[players.len()-1].player;
+			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			println!("best NN vs worst ({}):   {}", game_result.to_char(), game.to_uci());
+		}
+		println!();
+		{ // best nn vs worst nn
+			let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
+			let black = &players.iter().rev().find(|p| p.player.is_nn()).unwrap().player;
+			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			println!("best NN vs worst NN ({}):   {}", game_result.to_char(), game.to_uci());
+		}
+		println!();
+		{ // best nn vs second best nn
+			let [white, black] = players.iter()
+				.filter(|p| p.player.is_nn())
+				.k_largest_by(2, |p1, p2| p1.rating.partial_cmp(&p2.rating).unwrap())
+				.map(|p| &p.player)
+				.collect::<Vec<_>>()[..] else { unreachable!() };
+			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			println!("best NN vs second best NN ({}):   {}", game_result.to_char(), game.to_uci());
+		}
 
+		println!();
+
+		// TODO(optim): parallel evolution
 		let evolution_rate = training::EVOLUTION_RATE_INIT * exp(-evolution_rate_drop_speed * (epoch as f) / (training::EPOCHS as f - 1.));
-		println!("evolving with evo_rate = {evolution_rate:.4} ...");
-		let players_n = players.len();
-		let save_top_n = players_n / 3;
-		for i in save_top_n..players_n-1 {
-			// natural selection:
-			let player_to_clone = &players[i - save_top_n];
-			players[i] = if player_to_clone.player.is_nn() {
-				player_to_clone.clone()
-			} else {
-				PlayerWithRatingAndStats::new(Player::NN(NN::new_with_rng(nn::INNER_LAYERS_SIZES, &mut rng)))
-			};
-			// evolution:
+		macro_rules! get_random_evo_rate { () => {{
 			let k: f = rng.random_range(1. .. 10.);
 			let evo_rate = evolution_rate * if rng.random_bool(0.5) { k } else { k.recip() };
 			let evo_rate = evo_rate.clamp(0., 1.);
-			evolve_player(&mut players[i].player, evo_rate, &mut rng);
+			evo_rate
+		}}; }
+		println!("evolving with evo_rate = {evolution_rate:.4} ...");
+		let players_n = players.len();
+		{ // evolve nns:
+			const KEEP_TOP_NNS_FRAC: f = 2.3;
+			let nns_n = players.iter().filter(|p| p.player.is_nn()).count();
+			let keep_top_n_nns = ((nns_n as f) / KEEP_TOP_NNS_FRAC).round() as usize;
+			let mut nns_i = 0;
+			for i in 0..players_n {
+				if nns_i < keep_top_n_nns { continue }
+				if !players[i].player.is_nn() { continue }
+				nns_i += 1;
+				// natural selection:
+				let player_to_clone = &players[i - keep_top_n_nns];
+				players[i] = player_to_clone.clone(); // its always nn bc of `if is_nn => continue`
+				// evolution:
+				players[i].player.evolve(get_random_evo_rate!(), &mut rng);
+			}
+			// and (at least) one new random nn:
+			for i in (keep_top_n_nns..players_n).rev() {
+				if players[i].player.is_nn() {
+					// println!("reseting `player[{i}]`");
+					players[i] = PlayerWithRatingAndStats::new(Player::NN(NN::new_random(nn::INNER_LAYERS_SIZES, &mut rng)));
+					break
+				}
+			}
 		}
-		players[players_n-1] = PlayerWithRatingAndStats::new(Player::NN(NN::new_with_rng(nn::INNER_LAYERS_SIZES, &mut rng)));
+		{ // evolve algo mix:
+			for i in 0..players_n {
+				if !players[i].player.is_algo_mix() { continue }
+				let index_of_first_algo_mix = players.iter()
+					.position(|p| p.player.is_algo_mix())
+					.unwrap();
+				if i == index_of_first_algo_mix { continue }
+				if players[i].rating < training::DEFAULT_RATING {
+					if rng.random_bool(0.1) {
+						players[i] = PlayerWithRatingAndStats::new(Player::Algo(AlgoPlayer::mix_new_random(&mut rng)));
+						continue // dont evolve
+					} else {
+						players[i] = players[index_of_first_algo_mix].clone();
+					};
+				}
+				players[i].player.evolve(get_random_evo_rate!(), &mut rng);
+			}
+		}
+		{ // evolve algo mix uss:
+			for i in 0..players_n {
+				if !players[i].player.is_algo_mix_uss() { continue }
+				let index_of_first_algo_mix_uss = players.iter()
+					.position(|p| p.player.is_algo_mix_uss())
+					.unwrap();
+				if i == index_of_first_algo_mix_uss { continue }
+				if players[i].rating < training::DEFAULT_RATING {
+					if rng.random_bool(0.1) {
+						players[i] = PlayerWithRatingAndStats::new(Player::Algo(AlgoPlayer::mix_uss_new_random(&mut rng)));
+						continue // dont evolve
+					} else {
+						players[i] = players[index_of_first_algo_mix_uss].clone();
+					};
+				}
+				players[i].player.evolve(get_random_evo_rate!(), &mut rng);
+			}
+		}
 
 		assert_eq!(players_n_init, players.len());
 
 		println!();
 		println!();
 	}
+	println!();
+
+	todo!("cli/repl to interact (play,inspect,save,etc) with nns/algos");
 }
 
 
-
-fn evolve_player(player: &mut Player, evolution_rate: f, rng: &mut ThreadRng) {
-	use Player::*;
-	match player {
-		NN(nn) => { nn.evolve(evolution_rate, rng); }
-		Algo(_) => {}
-		Human { name: _ } => {}
-	}
-}
 
 
 
@@ -237,6 +332,7 @@ fn play_tournament(players: &mut [PlayerWithRatingAndStats], move_limit: u32) {
 	let players_n = players.len();
 	match nn::COMPUTE_UNIT {
 		ComputeUnit::CpuOne => {
+			print("games results: ");
 			for white_i in 0..players_n {
 				for black_i in 0..players_n {
 					if white_i == black_i { continue }
@@ -255,6 +351,7 @@ fn play_tournament(players: &mut [PlayerWithRatingAndStats], move_limit: u32) {
 		}
 		ComputeUnit::CpuAll => {
 			let players_ref: &[PlayerWithRatingAndStats] = &*players; // this fixes bc `&mut T` is not Copy (need for move), but `&T` is Copy (src: chatgpt)
+			print("games results: ");
 			let mut games: Vec<(usize, usize, GameResult_)> = (0..players_n).cartesian_product(0..players_n)
 				.par_bridge()
 				.map(|(white_i, black_i)| {
@@ -263,10 +360,12 @@ fn play_tournament(players: &mut [PlayerWithRatingAndStats], move_limit: u32) {
 					print(game_result.to_char());
 					Some((white_i, black_i, game_result))
 				})
-				.flatten() // remove `None`s
+				.flatten() // remove `None`s // TODO?: dont flatten, and when printing print `_` or something
 				.collect();
 			games.sort_unstable_by_key(|g| (g.0, g.1));
 			println!();
+			println!();
+			print!("organized: ");
 			for (i, (white_i, black_i, game_result)) in games.into_iter().enumerate() {
 				// println!("{white_i}, {black_i}, {game_result:?}");
 				if white_i == black_i { unreachable!() }
@@ -313,7 +412,7 @@ fn update_ratings(white: &mut f, black: &mut f, game_result: GameResult_) {
 			// let elo_rating_delta_2 = calc_elo_rating_delta(*black, *white);
 			// let elo_rating_delta = (elo_rating_delta_1 + elo_rating_delta_2) / 2.;
 			// let elo_rating_delta = elo_rating_delta / 1000.;
-			// todo!();
+			// TODO?
 			*black *= 0.999;
 			*white *= 0.999;
 		}
@@ -395,31 +494,56 @@ fn play_game(white: &Player, black: &Player, move_limit: u32, get_game: bool) ->
 	(gr, get_game.then(|| game))
 }
 
-pub trait CountMaterialDelta { fn count_material_delta(self) -> f; }
-impl CountMaterialDelta for Board {
+pub trait BoardCountMaterialDelta { fn count_material_delta(self) -> f; }
+impl BoardCountMaterialDelta for Board {
 	fn count_material_delta(self) -> f {
 		let mut material_delta = 0.;
 		let board_builder: BoardBuilder = self.into();
 		for square in ALL_SQUARES.into_iter() {
 			let maybe_piece_and_color: Option<(Piece, Color)> = board_builder[square];
 			if let Some((piece, color)) = maybe_piece_and_color {
-				let piece_value = match piece {
-					Piece::Pawn => 1.,
-					Piece::Knight => 2.5,
-					Piece::Bishop => 3.,
-					Piece::Rook => 5.,
-					Piece::Queen => 8.,
-					Piece::King => 10., // TODO(optim): dont count
-				};
-				match color {
-					Color::White => { material_delta += piece_value; }
-					Color::Black => { material_delta -= piece_value; }
-				}
+				let piece_value = piece_and_color_to_value(piece, color); // TODO(optim): dont count kings
+				material_delta += piece_value;
 			}
 		}
 		material_delta
 	}
 }
+
+pub fn piece_and_color_to_value(piece: Piece, color: Color) -> f {
+	let value = piece_to_value(piece);
+	value * color.to_sign()
+}
+
+pub fn piece_to_value(piece: Piece) -> f {
+	match piece {
+		Piece::Pawn => 1.,
+		Piece::Knight => 2.5,
+		Piece::Bishop => 3.,
+		Piece::Rook => 5.,
+		Piece::Queen => 8.,
+		Piece::King => 10.,
+	}
+}
+
+pub trait BoardSideToMoveToSign { fn side_to_move_to_sign(&self) -> f; }
+impl BoardSideToMoveToSign for Board {
+	fn side_to_move_to_sign(&self) -> f {
+		self.side_to_move().to_sign()
+	}
+}
+
+pub trait ColorToSign { fn to_sign(self) -> f; }
+impl ColorToSign for Color {
+	fn to_sign(self) -> f {
+		match self {
+			Color::White => 1.,
+			Color::Black => -1.,
+		}
+	}
+}
+
+
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
@@ -535,18 +659,36 @@ impl Player {
 	pub fn name(&self) -> String {
 		use Player::*;
 		match self {
-			NN(nn) => nn.name.clone(),
+			NN(nn) => format!("NN {:x}", nn.calc_hash()),
 			Algo(algo) => algo.get_name(),
 			Human { name } => name.clone(),
 		}
 	}
+	pub fn is_evolvalbe(&self) -> bool {
+		self.is_nn()
+		| self.is_algo_mix()
+		| self.is_algo_mix_uss()
+	}
 	pub fn is_nn(&self) -> bool {
+		matches!(self, Player::NN(_))
+	}
+	pub fn is_algo_mix(&self) -> bool {
+		matches!(self, Player::Algo(AlgoPlayer::Mix(_)))
+	}
+	pub fn is_algo_mix_uss(&self) -> bool {
+		matches!(self, Player::Algo(AlgoPlayer::MixUnderSignedSqrt(_)))
+	}
+	pub fn evolve(&mut self, evolution_rate: f, rng: &mut ThreadRng) {
 		use Player::*;
 		match self {
-			NN(_nn) => true,
-			Algo(_)
-			| Human { name: _ }
-			=> false
+			NN(nn) => {
+				nn.evolve(evolution_rate, rng);
+			}
+			Algo(AlgoPlayer::Mix(mix)) => {
+				mix.evolve(evolution_rate, rng);
+			}
+			Algo(_) => {}
+			Human { name: _ } => {}
 		}
 	}
 }
@@ -564,35 +706,38 @@ impl PlayerWithRatingAndStats {
 
 
 #[derive(Clone)]
-struct NN { layers: Vec<NNLayer>, name: String }
+struct NN { layers: Vec<NNLayer> }
 impl NN {
-	pub fn new_with_rng(inner_layers_sizes: &[u32], rng: &mut ThreadRng) -> Self {
+	pub fn new_random(inner_layers_sizes: &[u32], rng: &mut ThreadRng) -> Self {
 		let all_layers_sizes = [&[nn::INPUT_SIZE], inner_layers_sizes, &[nn::OUTPUT_SIZE]].concat();
-		let layers: Vec<_> = all_layers_sizes.array_windows().cloned().map(|[size_in, size_out]| NNLayer::new_with_rng(size_in, size_out, rng)).collect();
-		let name = format!("{:x}", Self::calc_hash(&layers));
-		Self { layers, name }
-	}
-	fn calc_hash(layers: &[NNLayer]) -> u64 {
-		let mut hash: u64 = 0x_1e88d6f0_b31da73f;
-		for layer in layers {
-			hash ^= layer.calc_hash();
+		Self {
+			layers: all_layers_sizes
+				.array_windows()
+				.cloned()
+				.map(|[size_in, size_out]| NNLayer::new_random(size_in, size_out, rng))
+				.collect()
 		}
-		hash
 	}
 	pub fn select_move(&self, board: &Board) -> ChessMove {
-		let mut best_move_and_score: Option<(ChessMove, f)> = None;
-		for move_ in MoveGen::new_legal(board) {
-			let board_after_move = board.make_move_new(move_);
-			let this_move_score = self.eval_board(&board_after_move);
-			if let Some((_best_move, best_move_score)) = best_move_and_score {
-				if this_move_score > best_move_score {
-					best_move_and_score = Some((move_, this_move_score));
-				}
-			} else {
-				best_move_and_score = Some((move_, this_move_score));
+		let moves_and_scores = MoveGen::new_legal(board)
+			.flat_map(|move_| {
+				let board_after_move = board.make_move_new(move_);
+				let score = self.eval_board(&board_after_move);
+				score.is_finite().then_some((move_, score))
+			});
+		let (best_move, _best_move_score) = match board.side_to_move() {
+			Color::White => {
+				moves_and_scores
+					.max_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
+					.unwrap()
 			}
-		}
-		best_move_and_score.unwrap().0
+			Color::Black => {
+				moves_and_scores
+					.min_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
+					.unwrap()
+			}
+		};
+		best_move
 	}
 	fn eval_board(&self, board: &Board) -> f {
 		let nn_input = board_to_vector_for_nn(board);
@@ -612,12 +757,20 @@ impl NN {
 			layer.evolve(evolution_rate, rng);
 		}
 	}
+	pub fn calc_hash(&self) -> u64 {
+		let layers: &[NNLayer] = &self.layers;
+		let mut hash: u64 = 0x_1e88d6f0_b31da73f;
+		for layer in layers {
+			hash ^= layer.calc_hash();
+		}
+		hash
+	}
 }
 
 #[derive(Clone)]
 struct NNLayer { weights: DMatrix<f>, biases: DVector<f> }
 impl NNLayer {
-	pub fn new_with_rng(size_in: u32, size_out: u32, rng: &mut ThreadRng) -> Self {
+	pub fn new_random(size_in: u32, size_out: u32, rng: &mut ThreadRng) -> Self {
 		// TODO(optim): dont use `random_range` repeatedly, instead create uniform distribution and multi sample it
 		Self {
 			weights: DMatrix::from_fn(
@@ -634,12 +787,12 @@ impl NNLayer {
 	pub fn calc_hash(&self) -> u64 {
 		let mut hash: u64 = 0x_c695d51f_e59c7bed;
 		for bias in self.biases.iter() {
-			let bias_bits = bias.to_bits() as u64;
-			hash ^= if hash.count_ones() % 2 == 0 { bias_bits } else { bias_bits << 32 };
+			let bits = bias.to_bits() as u64;
+			hash ^= if hash.count_ones() % 2 == 0 { bits } else { bits << 32 };
 		}
 		for weight in self.weights.iter() {
-			let weight_bits = weight.to_bits() as u64;
-			hash ^= if hash.count_ones() % 2 == 0 { weight_bits } else { weight_bits << 32 };
+			let bits = weight.to_bits() as u64;
+			hash ^= if hash.count_ones() % 2 == 0 { bits } else { bits << 32 };
 		}
 		hash
 	}
@@ -699,10 +852,10 @@ fn evolve_value(v: &mut f, rng: &mut ThreadRng) {
 		0.001 => { *v += sqrt(1. / abs(*v)); },
 		0.001 => { *v -= sqrt(1. / abs(*v)); },
 		// +- ln
-		0.0001 => { *v += sqrt(ln(*v)); },
-		0.0001 => { *v -= sqrt(ln(*v)); },
-		0.0001 => { *v += sqrt(1. / ln(*v)); },
-		0.0001 => { *v -= sqrt(1. / ln(*v)); },
+		// 0.0001 => { *v += sqrt(ln(*v)); },
+		// 0.0001 => { *v -= sqrt(ln(*v)); },
+		// 0.0001 => { *v += sqrt(1. / ln(*v)); },
+		// 0.0001 => { *v -= sqrt(1. / ln(*v)); },
 	}
 }
 
@@ -747,19 +900,12 @@ fn board_to_vector_for_nn(board: &Board) -> Vec<f> {
 				}
 			}
 
-			fn value_from_color(color: Color) -> f {
-				match color {
-					Color::White => 1.,
-					Color::Black => -1.,
-				}
-			}
-
 			match nn::NUMBER_OF_DEPTH_CHANNELS {
 				NumberOfDepthChannels::Two => {}
 				NumberOfDepthChannels::Three { use_opposite_signs } => {
 					// wab = white and black
 					let index_of_64_wab = get_index_of_64_wab(piece);
-					let value = if !use_opposite_signs { 1. } else { value_from_color(color) };
+					let value = if !use_opposite_signs { 1. } else { color.to_sign() };
 					// set white and black channel:
 					result[64*index_of_64_wab + index_in_64] = value;
 				}
@@ -778,7 +924,7 @@ fn board_to_vector_for_nn(board: &Board) -> Vec<f> {
 						Piece::Queen  => 22,
 						Piece::King   => 23,
 					};
-					let value = value_from_color(color);
+					let value = color.to_sign();
 					// set white and negative black channel:
 					result[64*index_of_64_wanb + index_in_64] = value;
 				}
@@ -796,46 +942,267 @@ fn board_to_vector_for_nn(board: &Board) -> Vec<f> {
 #[repr(u8)]
 enum AlgoPlayer {
 	RandomMover,
-	PiecesSum,
+	MiddleMover,
+	MaterialDelta,
+	MaterialDeltaSTM,
+	NegMaterialDelta,
+	NegMaterialDeltaSTM,
 	PiecesFreedom,
-	PiecesSumAndFreedom { sum_weight: f, freedom_weight: f },
+	PiecesFreedomSTM,
+	NegPiecesFreedom,
+	NegPiecesFreedomSTM,
+	PiecesFreedomDiff,
+	PiecesFreedomDiffSTM,
+	NegPiecesFreedomDiff,
+	NegPiecesFreedomDiffSTM,
+	Mix(AlgoPlayerMix),
+	MixUnderSignedSqrt(AlgoPlayerMix),
 }
 impl AlgoPlayer {
+	pub fn mix_new_random(rng: &mut ThreadRng) -> Self {
+		Self::Mix(AlgoPlayerMix::new_random(rng))
+	}
+	pub fn mix_uss_new_random(rng: &mut ThreadRng) -> Self {
+		Self::MixUnderSignedSqrt(AlgoPlayerMix::new_random(rng))
+	}
 	pub fn select_move(self, board: &Board, rng: &mut ThreadRng) -> ChessMove {
 		use AlgoPlayer::*;
 		match self {
-			RandomMover => select_random_move(board, rng),
-			PiecesSum => todo!(),
-			PiecesFreedom => todo!(),
-			PiecesSumAndFreedom { sum_weight, freedom_weight } => todo!(),
+			RandomMover => {
+				let moves = MoveGen::new_legal(board);
+				let moves = moves.into_iter().collect::<Vec<_>>();
+				let random_move_index = rng.random_range(0..moves.len());
+				let random_move = moves[random_move_index];
+				random_move
+			}
+			MiddleMover => {
+				let moves = MoveGen::new_legal(board);
+				let moves = moves.into_iter().collect::<Vec<_>>();
+				let middle_move = moves[moves.len()/2];
+				middle_move
+			}
+			MaterialDelta
+			| MaterialDeltaSTM
+			| NegMaterialDelta
+			| NegMaterialDeltaSTM
+			| PiecesFreedom
+			| PiecesFreedomSTM
+			| NegPiecesFreedom
+			| NegPiecesFreedomSTM
+			| PiecesFreedomDiff
+			| PiecesFreedomDiffSTM
+			| NegPiecesFreedomDiff
+			| NegPiecesFreedomDiffSTM
+			| Mix(_)
+			| MixUnderSignedSqrt(_)
+			=> {
+				let moves_and_scores = MoveGen::new_legal(board)
+					.flat_map(|move_| {
+						let board_after_move = board.make_move_new(move_);
+						let score = self.eval_board(&board_after_move, rng);
+						score.is_finite().then_some((move_, score))
+					});
+				let (best_move, _best_move_score) = match board.side_to_move() {
+					Color::White => {
+						moves_and_scores
+							.max_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
+							.unwrap_or_else(|| {
+								dbg!(self);
+								panic!()
+							})
+					}
+					Color::Black => {
+						moves_and_scores
+							.min_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
+							.unwrap_or_else(|| {
+								dbg!(self);
+								let moves_and_scores = MoveGen::new_legal(board)
+									.map(|move_| {
+										let board_after_move = board.make_move_new(move_);
+										let score = self.eval_board(&board_after_move, rng);
+										(move_, score)
+									});
+								dbg!(moves_and_scores.collect::<Vec<_>>());
+								panic!()
+							})
+					}
+				};
+				best_move
+			}
 		}
 	}
-	fn eval_board(self, board: &Board) -> f {
+	pub fn eval_board(self, board: &Board, rng: &mut ThreadRng) -> f {
 		use AlgoPlayer::*;
 		match self {
-			RandomMover => unreachable!(),
-			PiecesSum => todo!(),
-			PiecesFreedom => todo!(),
-			PiecesSumAndFreedom { sum_weight, freedom_weight } => todo!(),
+			RandomMover => rng.random_range(-50. .. 50.),
+			MiddleMover => unreachable!(),
+			Mix(mix) => {
+				AlgoPlayerMix::ALGOS
+					.map(|algo| algo.eval_board(board, rng))
+					.iter().zip_eq(mix.to_array())
+					.map(|(score, weight)| score * weight)
+					.sum()
+			}
+			MixUnderSignedSqrt(mix) => {
+				let under_sqrt = AlgoPlayerMix::ALGOS
+					.map(|algo| algo.eval_board(board, rng))
+					.iter().zip_eq(mix.to_array())
+					.map(|(&score, weight)| signed_sqrt(score) * weight)
+					.sum();
+				signed_square(under_sqrt)
+			}
+			_ => self._eval_board(board)
 		}
 	}
-	pub fn get_name(self) -> String {
+	fn _eval_board(self, board: &Board) -> f {
+		use AlgoPlayer::*;
+		match self {
+			RandomMover
+			| MiddleMover
+			=> unreachable!(),
+
+			MaterialDelta => board.count_material_delta(),
+			MaterialDeltaSTM => MaterialDelta._eval_board(board) * board.side_to_move_to_sign(),
+			NegMaterialDelta => -MaterialDelta._eval_board(board),
+			NegMaterialDeltaSTM => -MaterialDeltaSTM._eval_board(board),
+
+			PiecesFreedom => MoveGen::new_legal(board).count() as f,
+			PiecesFreedomSTM => PiecesFreedom._eval_board(board) * board.side_to_move_to_sign(),
+			NegPiecesFreedom => -PiecesFreedom._eval_board(board),
+			NegPiecesFreedomSTM => -PiecesFreedomSTM._eval_board(board),
+
+			PiecesFreedomDiff => {
+				let board_toggled_stm = board.null_move(); // "toggle" side to move
+				PiecesFreedom._eval_board(board) - board_toggled_stm.map(|b| PiecesFreedom._eval_board(&b)).unwrap_or(0.)
+			}
+			PiecesFreedomDiffSTM => PiecesFreedomDiff._eval_board(board) * board.side_to_move_to_sign(),
+			NegPiecesFreedomDiff => -PiecesFreedomDiff._eval_board(board),
+			NegPiecesFreedomDiffSTM => -PiecesFreedomDiffSTM._eval_board(board),
+
+			Mix(_) => unreachable!(),
+			MixUnderSignedSqrt(_) => unreachable!(),
+		}
+	}
+	pub fn get_name(&self) -> String {
 		use AlgoPlayer::*;
 		match self {
 			RandomMover => "RandomMover".to_string(),
-			PiecesSum => "PiecesSum".to_string(),
+			MiddleMover => "MiddleMover".to_string(),
+			MaterialDelta => "MaterialDelta".to_string(),
+			MaterialDeltaSTM => "MaterialDelta StM".to_string(),
+			NegMaterialDelta => "-MaterialDelta".to_string(),
+			NegMaterialDeltaSTM => "-MaterialDelta StM".to_string(),
 			PiecesFreedom => "PiecesFreedom".to_string(),
-			PiecesSumAndFreedom { sum_weight, freedom_weight } => todo!(),
+			PiecesFreedomSTM => "PiecesFreedom StM".to_string(),
+			NegPiecesFreedom => "-PiecesFreedom".to_string(),
+			NegPiecesFreedomSTM => "-PiecesFreedom StM".to_string(),
+			PiecesFreedomDiff => "PiecesFreedomDiff".to_string(),
+			PiecesFreedomDiffSTM => "PiecesFreedomDiff StM".to_string(),
+			NegPiecesFreedomDiff => "-PiecesFreedomDiff".to_string(),
+			NegPiecesFreedomDiffSTM => "-PiecesFreedomDiff StM".to_string(),
+			Mix(mix) => format!("Mix {:x} ({})", mix.calc_hash(), mix.to_string()),
+			MixUnderSignedSqrt(mix) => format!("MixUSS {:x} ({})", mix.calc_hash(), mix.to_string()),
 		}
 	}
 }
 
-fn select_random_move(board: &Board, rng: &mut ThreadRng) -> ChessMove {
-	let moves = MoveGen::new_legal(board);
-	let moves = moves.into_iter().collect::<Vec<_>>();
-	let random_move_index = rng.random_range(0..moves.len());
-	let random_move = moves[random_move_index];
-	random_move
+#[derive(Debug, Clone, Copy)]
+pub struct AlgoPlayerMix {
+	random_mover: f,
+	// middle_mover: f,
+	material_delta: f,
+	material_delta_stm: f,
+	neg_material_delta: f,
+	neg_material_delta_stm: f,
+	pieces_freedom: f,
+	pieces_freedom_stm: f,
+	neg_pieces_freedom: f,
+	neg_pieces_freedom_stm: f,
+	pieces_freedom_diff: f,
+	pieces_freedom_diff_stm: f,
+	neg_pieces_freedom_diff: f,
+	neg_pieces_freedom_diff_stm: f,
+	// TODO?: remove Copy & use via Box when size bigger than 128 bytes
+}
+impl AlgoPlayerMix {
+	const N: usize = 13;
+	const ALGOS: [AlgoPlayer; Self::N] = { use AlgoPlayer::*; [
+		RandomMover,
+		MaterialDelta,
+		MaterialDeltaSTM,
+		NegMaterialDelta,
+		NegMaterialDeltaSTM,
+		PiecesFreedom,
+		PiecesFreedomSTM,
+		NegPiecesFreedom,
+		NegPiecesFreedomSTM,
+		PiecesFreedomDiff,
+		PiecesFreedomDiffSTM,
+		NegPiecesFreedomDiff,
+		NegPiecesFreedomDiffSTM,
+	]};
+	pub fn new_random(rng: &mut ThreadRng) -> Self {
+		let ws: [f; Self::N] = std::array::from_fn(|_i| rng.random_range(0. .. 1.));
+		let ws_sum: f = ws.iter().sum();
+		let ws = ws.map(|v| v / ws_sum);
+		Self::from_array(ws)
+	}
+	pub fn from_array(weights: [f; Self::N]) -> Self {
+		assert!(weights.iter().all(|w| w.is_finite()), "{weights:?}");
+		let [random_mover, material_delta, material_delta_stm, neg_material_delta, neg_material_delta_stm, pieces_freedom, pieces_freedom_stm, neg_pieces_freedom, neg_pieces_freedom_stm, pieces_freedom_diff, pieces_freedom_diff_stm, neg_pieces_freedom_diff, neg_pieces_freedom_diff_stm ] = weights;
+		Self { random_mover, material_delta, material_delta_stm, neg_material_delta, neg_material_delta_stm, pieces_freedom, pieces_freedom_stm, neg_pieces_freedom, neg_pieces_freedom_stm, pieces_freedom_diff, pieces_freedom_diff_stm, neg_pieces_freedom_diff, neg_pieces_freedom_diff_stm }
+	}
+	pub fn to_array(&self) -> [f; Self::N] {
+		let Self { random_mover, material_delta, material_delta_stm, neg_material_delta, neg_material_delta_stm, pieces_freedom, pieces_freedom_stm, neg_pieces_freedom, neg_pieces_freedom_stm, pieces_freedom_diff, pieces_freedom_diff_stm, neg_pieces_freedom_diff, neg_pieces_freedom_diff_stm } = *self;
+		[random_mover, material_delta, material_delta_stm, neg_material_delta, neg_material_delta_stm, pieces_freedom, pieces_freedom_stm, neg_pieces_freedom, neg_pieces_freedom_stm, pieces_freedom_diff, pieces_freedom_diff_stm, neg_pieces_freedom_diff, neg_pieces_freedom_diff_stm]
+	}
+	pub fn evolve(&mut self, evolution_rate: f, rng: &mut ThreadRng) {
+		let mut ws = self.to_array();
+		for w in ws.iter_mut() {
+			if rng.random_bool(evolution_rate as f64) {
+				// toggle zero / non-zero
+				*w = if *w == 0. { rng.random_range(0. .. 1.) } else { 0. };
+			}
+			if rng.random_bool(evolution_rate as f64) {
+				evolve_value(w, rng);
+			}
+			*w = w.clamp(0., 1.);
+		}
+		let ws_sum: f = ws.iter().sum();
+		if ws_sum != 0. {
+			ws = ws.map(|v| v / ws_sum);
+		}
+		*self = Self::from_array(ws);
+	}
+	pub fn calc_hash(&self) -> u64 {
+		let mut hash: u64 = 0x_7dc29f45_3decba81;
+		for w in self.to_array() {
+			let bits = w.to_bits() as u64;
+			hash ^= if hash.count_ones() % 2 == 0 { bits } else { bits << 32 };
+		}
+		hash
+	}
+}
+impl ToString for AlgoPlayerMix {
+	fn to_string(&self) -> String {
+		let Self { random_mover, material_delta, material_delta_stm, neg_material_delta, neg_material_delta_stm, pieces_freedom, pieces_freedom_stm, neg_pieces_freedom, neg_pieces_freedom_stm, pieces_freedom_diff, pieces_freedom_diff_stm, neg_pieces_freedom_diff, neg_pieces_freedom_diff_stm } = *self;
+		let sep = "=";
+		let mut parts = vec![];
+		if random_mover != 0. { parts.push(format!("random_mover{sep}{random_mover:.2}")); }
+		if material_delta != 0. { parts.push(format!("material_delta{sep}{material_delta:.2}")); }
+		if material_delta_stm != 0. { parts.push(format!("material_delta_stm{sep}{material_delta_stm:.2}")); }
+		if neg_material_delta != 0. { parts.push(format!("neg_material_delta{sep}{neg_material_delta:.2}")); }
+		if neg_material_delta_stm != 0. { parts.push(format!("neg_material_delta_stm{sep}{neg_material_delta_stm:.2}")); }
+		if pieces_freedom != 0. { parts.push(format!("pieces_freedom{sep}{pieces_freedom:.2}")); }
+		if pieces_freedom_stm != 0. { parts.push(format!("pieces_freedom_stm{sep}{pieces_freedom_stm:.2}")); }
+		if neg_pieces_freedom != 0. { parts.push(format!("neg_pieces_freedom{sep}{neg_pieces_freedom:.2}")); }
+		if neg_pieces_freedom_stm != 0. { parts.push(format!("neg_pieces_freedom_stm{sep}{neg_pieces_freedom_stm:.2}")); }
+		if pieces_freedom_diff != 0. { parts.push(format!("pieces_freedom_diff{sep}{pieces_freedom_diff:.2}")); }
+		if pieces_freedom_diff_stm != 0. { parts.push(format!("pieces_freedom_diff_stm{sep}{pieces_freedom_diff_stm:.2}")); }
+		if neg_pieces_freedom_diff != 0. { parts.push(format!("neg_pieces_freedom_diff{sep}{neg_pieces_freedom_diff:.2}")); }
+		if neg_pieces_freedom_diff_stm != 0. { parts.push(format!("neg_pieces_freedom_diff_stm{sep}{neg_pieces_freedom_diff_stm:.2}")); }
+		parts.join(", ")
+	}
 }
 
 
@@ -875,12 +1242,8 @@ impl ToUci for Game {
 
 
 
-
-
 #[allow(non_camel_case_types)]
 pub type f = f32;
-
-
 
 
 
