@@ -77,7 +77,8 @@ mod nn {
 	pub const OUTPUT_SIZE: u32 = 1;
 
 	// pub const COMPUTE_UNIT: ComputeUnit = ComputeUnit::CpuOne;
-	pub const COMPUTE_UNIT: ComputeUnit = ComputeUnit::CpuAll;
+	pub const COMPUTE_UNIT: ComputeUnit = ComputeUnit::CpuN(4);
+	// pub const COMPUTE_UNIT: ComputeUnit = ComputeUnit::CpuAll;
 
 	pub const W_MIN: f = -1.;
 	pub const W_MAX: f =  1.;
@@ -94,6 +95,12 @@ fn main() {
 
 	let mut rng = rng();
 
+	if let ComputeUnit::CpuN(n) = nn::COMPUTE_UNIT {
+		rayon::ThreadPoolBuilder::new()
+			.num_threads(n as usize)
+			.build_global()
+			.unwrap();
+	}
 
 	let algo_players = { use AlgoPlayer::*; [
 		RandomMover,
@@ -346,10 +353,7 @@ fn play_tournament(players: &mut [PlayerWithRatingAndStats], move_limit: u32) {
 			}
 			println!();
 		}
-		ComputeUnit::Cpu(_) => {
-			unimplemented!()
-		}
-		ComputeUnit::CpuAll => {
+		ComputeUnit::CpuN(_) | ComputeUnit::CpuAll => {
 			let players_ref: &[PlayerWithRatingAndStats] = &*players; // this fixes bc `&mut T` is not Copy (need for move), but `&T` is Copy (src: chatgpt)
 			print("games results: ");
 			let mut games: Vec<(usize, usize, GameResult_)> = (0..players_n).cartesian_product(0..players_n)
@@ -1212,7 +1216,7 @@ impl ToString for AlgoPlayerMix {
 #[repr(u8)]
 enum ComputeUnit {
 	CpuOne,
-	Cpu(u32),
+	CpuN(u32),
 	CpuAll,
 	Gpu,
 }
