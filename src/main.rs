@@ -19,7 +19,7 @@
 	clippy::upper_case_acronyms,
 )]
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, time::Instant};
 
 use chess::{ALL_SQUARES, Action, Board, BoardBuilder, ChessMove, Color, Game, GameResult, MoveGen, Piece};
 use itertools::Itertools;
@@ -46,7 +46,6 @@ mod training {
 
 	pub const EPOCHS: u32 = 100;
 	pub const NNS_NUMBER: u32 = 20; // it's better be multiple of number of cores/threads on your machine? or else...
-	// pub const TOURNAMENTS_NUMBER: u32 = 10;
 	pub const PLAY_GAME_MOVES_LIMIT: u32 = 200;
 
 	pub const EVOLUTION_RATE_INIT: f = 0.9;
@@ -95,6 +94,8 @@ mod nn {
 
 
 fn main() {
+	let timestamp_begin = Instant::now();
+
 	debug_assert_eq!(1, nn::OUTPUT_SIZE);
 
 	let mut rng = rng();
@@ -338,6 +339,10 @@ fn main() {
 		println!();
 	}
 	println!();
+
+	let timestamp_end = Instant::now();
+	let time_spent = timestamp_end.duration_since(timestamp_begin);
+	println!("time spent: {:.1}s", time_spent.as_secs_f64());
 
 	todo!("cli/repl to interact (play,inspect,save,etc) with nns/algos");
 }
