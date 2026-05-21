@@ -278,9 +278,9 @@ fn main() {
 			let keep_top_n_nns = ((nns_n as f) / KEEP_TOP_NNS_FRAC).round() as usize;
 			let mut nns_i = 0;
 			for i in 0..players_n {
-				if nns_i < keep_top_n_nns { continue }
 				if !players[i].player.is_nn() { continue }
 				nns_i += 1;
+				if nns_i < keep_top_n_nns { continue }
 				// natural selection:
 				let player_to_clone = &players[i - keep_top_n_nns];
 				players[i] = player_to_clone.clone(); // its always nn bc of `if is_nn => continue`
@@ -297,11 +297,11 @@ fn main() {
 			}
 		}
 		{ // evolve algo mix:
+			let index_of_first_algo_mix = players.iter()
+				.position(|p| p.player.is_algo_mix())
+				.unwrap();
 			for i in 0..players_n {
 				if !players[i].player.is_algo_mix() { continue }
-				let index_of_first_algo_mix = players.iter()
-					.position(|p| p.player.is_algo_mix())
-					.unwrap();
 				if i == index_of_first_algo_mix { continue }
 				if players[i].rating < training::DEFAULT_RATING {
 					if rng.random_bool(0.1) {
@@ -315,11 +315,11 @@ fn main() {
 			}
 		}
 		{ // evolve algo mix uss:
+			let index_of_first_algo_mix_uss = players.iter()
+				.position(|p| p.player.is_algo_mix_uss())
+				.unwrap();
 			for i in 0..players_n {
 				if !players[i].player.is_algo_mix_uss() { continue }
-				let index_of_first_algo_mix_uss = players.iter()
-					.position(|p| p.player.is_algo_mix_uss())
-					.unwrap();
 				if i == index_of_first_algo_mix_uss { continue }
 				if players[i].rating < training::DEFAULT_RATING {
 					if rng.random_bool(0.1) {
