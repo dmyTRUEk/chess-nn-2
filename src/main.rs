@@ -702,6 +702,9 @@ impl Player {
 			Algo(AlgoPlayer::Mix(mix)) => {
 				mix.evolve(evolution_rate, rng);
 			}
+			Algo(AlgoPlayer::MixUnderSignedSqrt(mix)) => {
+				mix.evolve(evolution_rate, rng);
+			}
 			Algo(_) => {}
 			Human { name: _ } => {}
 		}
