@@ -6,8 +6,9 @@
 
 #![deny(
 	unreachable_patterns,
+	unused_must_use,
 	unused_results,
-	// unused_variables,
+	unused_variables,
 	clippy::let_unit_value,
 )]
 
@@ -112,6 +113,8 @@ fn main() {
 			.build_global()
 			.unwrap();
 	}
+
+	// TODO: print all params
 
 	let algo_players = { use AlgoPlayer::*; [
 		RandomMover,
@@ -355,6 +358,8 @@ fn main() {
 	}
 	println!();
 
+	// TODO: print all params?
+
 	let timestamp_end = Instant::now();
 	let time_spent = timestamp_end.duration_since(timestamp_begin);
 	println!("time spent: {:.1}s", time_spent.as_secs_f64());
@@ -493,7 +498,7 @@ fn play_game(white: &Player, black: &Player, move_limit: u32, get_game: bool) ->
 	let mut rng = rng();
 	let mut game = Game::new(); // TODO!(optim): dont use Game, use Board directly
 	let mut move_number: u32 = 0;
-	while game.result() == None && move_number < move_limit { // TODO
+	while game.result().is_none() && move_number < move_limit {
 		move_number += 1;
 		let board = game.current_position();
 		let side_to_move: Color = board.side_to_move();
@@ -796,9 +801,8 @@ impl NN {
 		}
 	}
 	pub fn calc_hash(&self) -> u64 {
-		let layers: &[NNLayer] = &self.layers;
 		let mut hash: u64 = 0x_1e88d6f0_b31da73f;
-		for layer in layers {
+		for layer in self.layers.iter() {
 			hash ^= layer.calc_hash();
 		}
 		hash
@@ -824,14 +828,8 @@ impl NNLayer {
 	}
 	pub fn calc_hash(&self) -> u64 {
 		let mut hash: u64 = 0x_c695d51f_e59c7bed;
-		for bias in self.biases.iter() {
-			let bits = bias.to_bits() as u64;
-			hash ^= if hash.count_ones() % 2 == 0 { bits } else { bits << 32 };
-		}
-		for weight in self.weights.iter() {
-			let bits = weight.to_bits() as u64;
-			hash ^= if hash.count_ones() % 2 == 0 { bits } else { bits << 32 };
-		}
+		hash ^= calc_hash_of_float_slice(self.biases.as_slice());
+		hash ^= calc_hash_of_float_slice(self.weights.as_slice());
 		hash
 	}
 	pub fn eval(&self, input: DVector<f>) -> DVector<f> {
@@ -1221,10 +1219,7 @@ impl AlgoPlayerMix {
 	}
 	pub fn calc_hash(&self) -> u64 {
 		let mut hash: u64 = 0x_7dc29f45_3decba81;
-		for w in self.to_array() {
-			let bits = w.to_bits() as u64;
-			hash ^= if hash.count_ones() % 2 == 0 { bits } else { bits << 32 };
-		}
+		hash ^= calc_hash_of_float_slice(self.to_array().as_slice());
 		hash
 	}
 }
@@ -1248,6 +1243,33 @@ impl ToString for AlgoPlayerMix {
 		if neg_pieces_freedom_diff_stm != 0. { parts.push(format!("neg_pieces_freedom_diff_stm{sep}{neg_pieces_freedom_diff_stm:.2}")); }
 		parts.join(", ")
 	}
+}
+
+
+
+
+
+pub fn calc_hash_of_float_slice(values: &[f]) -> u64 {
+	let mut hash: u64 = 0x_2e7ef108_6fce8375;
+	for v in values {
+		let bits = v.to_bits() as u64;
+		// hash-in value's bits:
+		hash ^= if hash.count_ones() % 2 == 0 { bits } else { bits << 32 };
+		// shuffle bits:
+		hash = match (hash.count_ones() % 2 == 0, hash % 2 == 0) {
+			(true, true) => hash.reverse_bits(),
+			(true, false) => !hash,
+			(false, true) => {
+				let [b0,b1,b2,b3, b4,b5,b6,b7] = hash.to_ne_bytes();
+				u64::from_ne_bytes([b4,b5,b6,b7, b0,b1,b2,b3])
+			}
+			(false, false) => {
+				let [b0,b1,b2,b3, b4,b5,b6,b7] = hash.to_ne_bytes();
+				u64::from_ne_bytes([b0,b2,b4,b6, b1,b3,b5,b7])
+			}
+		}
+	}
+	hash
 }
 
 
