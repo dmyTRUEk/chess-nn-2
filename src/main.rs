@@ -44,7 +44,7 @@ use utils_io::*;
 mod training {
 	use super::*;
 
-	pub const EPOCHS: u32 = 100;
+	pub const EPOCHS: u32 = 1000;
 	pub const NNS_NUMBER: u32 = 20; // it's better be multiple of number of cores/threads on your machine? or else...
 	pub const PLAY_GAME_MOVES_LIMIT: u32 = 200;
 
@@ -54,7 +54,12 @@ mod training {
 	pub const DEFAULT_RATING: f = 1_000.;
 
 	pub const WIN_BY_POINTS_K: f = 1. / 10.;
+
 	pub const DRAW_BY_POINTS_K: f = 0.999;
+	// pub const DRAW_BY_POINTS_K: f = 1.;
+
+	// pub const ALGO_WEIGHTS_CLAMP: f = 1.;
+	pub const ALGO_WEIGHTS_CLAMP: f = 999.;
 
 	// pub const CHESS_NN_THINK_DEPTH_FOR_TRAINING: u8 = 1;
 	// pub const CHESS_NN_THINK_DEPTH_VS_HUMAN: u8 = 3; // 4 if parallel
@@ -68,7 +73,8 @@ mod nn {
 
 	pub const INNER_LAYERS_SIZES: &[u32] = &[1000, 300, 100, 30, 10, 5];
 	// pub const INNER_LAYERS_SIZES: &[u32] = &[300, 100, 30, 10, 5];
-	// pub const INNER_LAYERS_SIZES: &[u32] = &[30, 10, 5];
+	// pub const INNER_LAYERS_SIZES: &[u32] = &[100, 30, 10, 5];
+	// pub const INNER_LAYERS_SIZES: &[u32] = &[30, 10, 5]; // for tests
 
 	// pub const NUMBER_OF_DEPTH_CHANNELS: NumberOfDepthChannels = NumberOfDepthChannels::Two;
 	// pub const NUMBER_OF_DEPTH_CHANNELS: NumberOfDepthChannels = NumberOfDepthChannels::Three { use_opposite_signs: false };
@@ -1040,6 +1046,13 @@ impl AlgoPlayer {
 							.max_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
 							.unwrap_or_else(|| {
 								dbg!(self);
+								let moves_and_scores = MoveGen::new_legal(board)
+									.map(|move_| {
+										let board_after_move = board.make_move_new(move_);
+										let score = self.eval_board(&board_after_move, rng);
+										(move_, score)
+									});
+								dbg!(moves_and_scores.collect::<Vec<_>>());
 								panic!()
 							})
 					}
@@ -1198,7 +1211,7 @@ impl AlgoPlayerMix {
 			if rng.random_bool(evolution_rate as f64) {
 				evolve_value(w, rng);
 			}
-			*w = w.clamp(0., 1.);
+			*w = w.clamp(0., training::ALGO_WEIGHTS_CLAMP);
 		}
 		let ws_sum: f = ws.iter().sum();
 		if ws_sum != 0. {
