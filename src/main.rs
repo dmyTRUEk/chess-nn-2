@@ -54,6 +54,9 @@ mod training {
 
 	pub const DEFAULT_RATING: f = 1_000.;
 
+	pub const WIN_BY_POINTS_K: f = 1. / 10.;
+	pub const DRAW_BY_POINTS_K: f = 0.999;
+
 	// pub const CHESS_NN_THINK_DEPTH_FOR_TRAINING: u8 = 1;
 	// pub const CHESS_NN_THINK_DEPTH_VS_HUMAN: u8 = 3; // 4 if parallel
 }
@@ -64,7 +67,8 @@ mod nn {
 	pub const ACTIVATION_FN: ActivationFn = ActivationFn::LeakyReLU_01;
 	// pub const ACTIVATION_FN: ActivationFn = ActivationFn::LeakyReLU_001;
 
-	pub const INNER_LAYERS_SIZES: &[u32] = &[300, 100, 30, 10, 5];
+	pub const INNER_LAYERS_SIZES: &[u32] = &[1000, 300, 100, 30, 10, 5];
+	// pub const INNER_LAYERS_SIZES: &[u32] = &[300, 100, 30, 10, 5];
 	// pub const INNER_LAYERS_SIZES: &[u32] = &[30, 10, 5];
 
 	// pub const NUMBER_OF_DEPTH_CHANNELS: NumberOfDepthChannels = NumberOfDepthChannels::Two;
@@ -77,8 +81,8 @@ mod nn {
 	pub const OUTPUT_SIZE: u32 = 1;
 
 	// pub const COMPUTE_UNIT: ComputeUnit = ComputeUnit::CpuOne;
-	pub const COMPUTE_UNIT: ComputeUnit = ComputeUnit::CpuN(4);
-	// pub const COMPUTE_UNIT: ComputeUnit = ComputeUnit::CpuAll;
+	// pub const COMPUTE_UNIT: ComputeUnit = ComputeUnit::CpuN(4);
+	pub const COMPUTE_UNIT: ComputeUnit = ComputeUnit::CpuAll;
 
 	pub const W_MIN: f = -1.;
 	pub const W_MAX: f =  1.;
@@ -409,12 +413,12 @@ fn update_ratings(white: &mut f, black: &mut f, game_result: GameResult_) {
 			*white -= elo_rating_delta;
 		}
 		WhiteWinsByPoints => {
-			let elo_rating_delta = calc_elo_rating_delta(*white, *black) / 100.;
+			let elo_rating_delta = calc_elo_rating_delta(*white, *black) * training::WIN_BY_POINTS_K;
 			*white += elo_rating_delta;
 			*black -= elo_rating_delta;
 		}
 		BlackWinsByPoints => {
-			let elo_rating_delta = calc_elo_rating_delta(*black, *white) / 100.;
+			let elo_rating_delta = calc_elo_rating_delta(*black, *white) * training::WIN_BY_POINTS_K;
 			*black += elo_rating_delta;
 			*white -= elo_rating_delta;
 		}
@@ -424,8 +428,8 @@ fn update_ratings(white: &mut f, black: &mut f, game_result: GameResult_) {
 			// let elo_rating_delta = (elo_rating_delta_1 + elo_rating_delta_2) / 2.;
 			// let elo_rating_delta = elo_rating_delta / 1000.;
 			// TODO?
-			*black *= 0.999;
-			*white *= 0.999;
+			*black *= training::DRAW_BY_POINTS_K;
+			*white *= training::DRAW_BY_POINTS_K;
 		}
 	}
 }
@@ -502,7 +506,7 @@ fn play_game(white: &Player, black: &Player, move_limit: u32, get_game: bool) ->
 			Ordering::Greater => GameResult_::WhiteWinsByPoints,
 		}
 	};
-	(gr, get_game.then(|| game))
+	(gr, get_game.then_some(game))
 }
 
 pub trait BoardCountMaterialDelta { fn count_material_delta(self) -> f; }
