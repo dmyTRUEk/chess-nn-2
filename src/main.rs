@@ -272,8 +272,9 @@ fn main() {
 		}}; }
 		println!("evolving with evo_rate = {evolution_rate:.4} ...");
 		let players_n = players.len();
-		{ // evolve nns:
+		{ // evolve and natsel: nns
 			const KEEP_TOP_NNS_FRAC: f = 2.3;
+			let index_of_best_nn = players.iter().position(|p| p.player.is_nn()).unwrap();
 			let nns_n = players.iter().filter(|p| p.player.is_nn()).count();
 			let keep_top_n_nns = ((nns_n as f) / KEEP_TOP_NNS_FRAC).round() as usize;
 			let mut nns_i = 0;
@@ -281,9 +282,17 @@ fn main() {
 				if !players[i].player.is_nn() { continue }
 				nns_i += 1;
 				if nns_i < keep_top_n_nns { continue }
-				// natural selection:
 				let player_to_clone = &players[i - keep_top_n_nns];
-				players[i] = player_to_clone.clone(); // its always nn bc of `if is_nn => continue`
+				if player_to_clone.player.is_nn() {
+					players[i] = player_to_clone.clone();
+				} else {
+					if rng.random_bool(0.1) {
+						players[i] = PlayerWithRatingAndStats::new(Player::NN(NN::new_random(nn::INNER_LAYERS_SIZES, &mut rng)));
+						continue // dont evolve
+					} else {
+						players[i] = players[index_of_best_nn].clone();
+					}
+				}
 				// evolution:
 				players[i].player.evolve(get_random_evo_rate!(), &mut rng);
 			}
@@ -296,37 +305,37 @@ fn main() {
 				}
 			}
 		}
-		{ // evolve algo mix:
-			let index_of_first_algo_mix = players.iter()
+		{ // evolve and natsel: algo mix
+			let index_of_best_algo_mix = players.iter()
 				.position(|p| p.player.is_algo_mix())
 				.unwrap();
 			for i in 0..players_n {
 				if !players[i].player.is_algo_mix() { continue }
-				if i == index_of_first_algo_mix { continue }
+				if i == index_of_best_algo_mix { continue }
 				if players[i].rating < training::DEFAULT_RATING {
 					if rng.random_bool(0.1) {
 						players[i] = PlayerWithRatingAndStats::new(Player::Algo(AlgoPlayer::mix_new_random(&mut rng)));
 						continue // dont evolve
 					} else {
-						players[i] = players[index_of_first_algo_mix].clone();
+						players[i] = players[index_of_best_algo_mix].clone();
 					};
 				}
 				players[i].player.evolve(get_random_evo_rate!(), &mut rng);
 			}
 		}
-		{ // evolve algo mix uss:
-			let index_of_first_algo_mix_uss = players.iter()
+		{ // evolve and natsel: algo mix uss
+			let index_of_best_algo_mix_uss = players.iter()
 				.position(|p| p.player.is_algo_mix_uss())
 				.unwrap();
 			for i in 0..players_n {
 				if !players[i].player.is_algo_mix_uss() { continue }
-				if i == index_of_first_algo_mix_uss { continue }
+				if i == index_of_best_algo_mix_uss { continue }
 				if players[i].rating < training::DEFAULT_RATING {
 					if rng.random_bool(0.1) {
 						players[i] = PlayerWithRatingAndStats::new(Player::Algo(AlgoPlayer::mix_uss_new_random(&mut rng)));
 						continue // dont evolve
 					} else {
-						players[i] = players[index_of_first_algo_mix_uss].clone();
+						players[i] = players[index_of_best_algo_mix_uss].clone();
 					};
 				}
 				players[i].player.evolve(get_random_evo_rate!(), &mut rng);
