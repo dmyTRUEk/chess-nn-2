@@ -15,6 +15,9 @@ macro_rules! impl_gen_with_weights {
 		#[derive(Debug, Clone, Copy, IntoPrimitive, TryFromPrimitive)]
 		#[repr(u8)]
 		pub enum $name $elems
+		impl $name {
+			pub const NUMBER_OF_VARIANTS: u8 = $num;
+		}
 		impl<R: Rng> TypesafeRNG<$num, $name> for R {
 			fn random_variant(&mut self) -> $name {
 				let n: u8 = self.random_range(0..$num);
@@ -88,6 +91,7 @@ impl_gen_with_weights!(9, V9, { _1, _2, _3, _4, _5, _6, _7, _8, _9 });
 impl_gen_with_weights!(10, V10, { _1, _2, _3, _4, _5, _6, _7, _8, _9, _10 });
 impl_gen_with_weights!(11, V11, { _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11 });
 impl_gen_with_weights!(12, V12, { _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12 });
+// NOTE: 255 is max bc of `#[repr(u8)]`
 
 
 

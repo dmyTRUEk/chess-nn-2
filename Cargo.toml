@@ -16,6 +16,7 @@ strip = "debuginfo"
 [dependencies]
 # chess = { git = "https://github.com/jordanbray/chess", rev = "80e73cd93b3ca5dd4dc952c77355e37a5bb61b30" }
 chess = "3.2.0"
+chrono = "0.4.44"
 itertools = "0.14.0"
 nalgebra = "0.34.2"
 num_enum = "0.7.6"

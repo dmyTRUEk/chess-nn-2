@@ -1,6 +1,7 @@
 //! chess-nn 2
 
 #![feature(
+	iter_array_chunks,
 	vec_from_fn,
 )]
 
@@ -20,9 +21,10 @@
 	clippy::upper_case_acronyms,
 )]
 
-use std::{cmp::Ordering, time::Instant};
+use std::{cmp::Ordering, path::PathBuf, time::Instant};
 
 use chess::{ALL_SQUARES, Action, Board, BoardBuilder, ChessMove, Color, Game, GameResult, MoveGen, Piece};
+use chrono::Local;
 use itertools::Itertools;
 use nalgebra::{DMatrix, DVector};
 use rand::{RngExt, rng, rngs::ThreadRng, seq::SliceRandom};
@@ -42,7 +44,7 @@ use utils_io::*;
 
 
 
-mod training {
+mod training_default {
 	use super::*;
 
 	pub const EPOCHS: u32 = 1000;
@@ -51,8 +53,6 @@ mod training {
 
 	pub const EVOLUTION_RATE_INIT: f = 0.9;
 	pub const EVOLUTION_RATE_FINAL: f = 0.001;
-
-	pub const DEFAULT_RATING: f = 1_000.;
 
 	pub const WIN_BY_POINTS_K: f = 1. / 10.;
 
@@ -64,15 +64,17 @@ mod training {
 
 	// pub const CHESS_NN_THINK_DEPTH_FOR_TRAINING: u8 = 1;
 	// pub const CHESS_NN_THINK_DEPTH_VS_HUMAN: u8 = 3; // 4 if parallel
+
+	pub const SAVE_EVERY_N_EPOCHS: u32 = 10;
 }
 
-mod nn {
+pub const DEFAULT_RATING: f = 1_000.;
+
+mod nn_default {
 	use super::*;
 
-	pub const ACTIVATION_FN: ActivationFn = ActivationFn::LeakyReLU_01;
-	// pub const ACTIVATION_FN: ActivationFn = ActivationFn::LeakyReLU_001;
-
-	pub const INNER_LAYERS_SIZES: &[u32] = &[1000, 300, 100, 30, 10, 5];
+	pub const INNER_LAYERS_SIZES: &[u32] = &[1000, 500, 300];
+	// pub const INNER_LAYERS_SIZES: &[u32] = &[1000, 300, 100, 30, 10, 5];
 	// pub const INNER_LAYERS_SIZES: &[u32] = &[300, 100, 30, 10, 5];
 	// pub const INNER_LAYERS_SIZES: &[u32] = &[100, 30, 10, 5];
 	// pub const INNER_LAYERS_SIZES: &[u32] = &[30, 10, 5]; // for tests
@@ -86,14 +88,47 @@ mod nn {
 	pub const INPUT_SIZE: u32 = NUMBER_OF_DEPTH_CHANNELS.to_u32() * INPUT_SIZE_PER_COLOR_CHANNEL; // 768 or 1152 or 1536
 	pub const OUTPUT_SIZE: u32 = 1;
 
-	// pub const COMPUTE_UNIT: ComputeUnit = ComputeUnit::CpuOne;
-	// pub const COMPUTE_UNIT: ComputeUnit = ComputeUnit::CpuN(4);
-	pub const COMPUTE_UNIT: ComputeUnit = ComputeUnit::CpuAll;
+	// TODO(refactor): move outside?
+	pub const COMPUTE_UNIT_STR: &str = "cpuall";
 
 	pub const W_MIN: f = -1.;
 	pub const W_MAX: f =  1.;
 	pub const S_MIN: f = -10.;
 	pub const S_MAX: f =  10.;
+}
+
+pub const NN_FILE_FORMAT_EXT: &str = "nn";
+pub const NN_FILE_FORMAT_MAGIC: u64 = 0x_066262e3_145aaa67;
+
+
+
+
+
+#[derive(Debug)]
+struct Config {
+	compute_unit: ComputeUnit,
+	task: Task,
+	create_nn_from: CreateNNFrom,
+	nns_number: u32,
+	epochs: u32,
+	save_every_n_epochs: u32,
+	play_game_moves_limit: u32,
+	evolution_rate_init: f,
+	evolution_rate_final: f,
+	win_by_points_k: f,
+	draw_by_points_k: f,
+	algo_weights_clamp: f,
+}
+#[derive(Debug)]
+enum CreateNNFrom {
+	File(PathBuf),
+	InnerLayersSizes(Vec<u32>),
+}
+#[derive(Debug)]
+enum Task {
+	Train,
+	Inspect,
+	Play,
 }
 
 
@@ -103,16 +138,9 @@ mod nn {
 fn main() {
 	let timestamp_begin = Instant::now();
 
-	debug_assert_eq!(1, nn::OUTPUT_SIZE);
+	debug_assert_eq!(1, nn_default::OUTPUT_SIZE);
 
 	let mut rng = rng();
-
-	if let ComputeUnit::CpuN(n) = nn::COMPUTE_UNIT {
-		rayon::ThreadPoolBuilder::new()
-			.num_threads(n as usize)
-			.build_global()
-			.unwrap();
-	}
 
 	// TODO: print all params
 
@@ -160,9 +188,124 @@ fn main() {
 	// }
 	// return;
 
-	let nns = Vec::from_fn(training::NNS_NUMBER as usize, |_i| NN::new_random(nn::INNER_LAYERS_SIZES, &mut rng));
-	assert_eq!(training::NNS_NUMBER, nns.len() as u32);
-	println!("Created {} NNs", training::NNS_NUMBER);
+	let config = {
+		let compute_unit: ComputeUnit = loop {
+			break match prompt_with_name_and_default("Compute unit (cpu<n>, cpuall, gpu)", nn_default::COMPUTE_UNIT_STR.to_string()).as_str() {
+				// TODO(refactor): extract into `ComputeUnit::from_str`
+				"cpu1" | "cpuone" => ComputeUnit::CpuOne,
+				"cpuall" => ComputeUnit::CpuAll,
+				"gpu" => ComputeUnit::Gpu,
+				cpun if cpun.starts_with("cpu") => if let Ok(n) = cpun[3..].parse() { ComputeUnit::CpuN(n) } else { continue },
+				_ => continue
+			}
+		};
+		let task: Task = loop {
+			break match prompt_with_name_and_default("Task (Train, Inspect, Play)", "train".to_string()).as_str() {
+				"t" | "train" => Task::Train,
+				"i" | "inspect" => Task::Inspect,
+				"p" | "play" => Task::Play,
+				_ => continue
+			}
+		};
+		let load_nn_from_file: bool = loop {
+			break match prompt_with_name_and_default("Load NN from file (Yes/No)", "yes".to_string()).as_str() {
+				"y" | "yes" => true,
+				"n" | "no" => false,
+				_ => continue
+			}
+		};
+		fn prompt_inner_layers_sizes() -> Vec<u32> {
+			let inner_layers_sizes_default = nn_default::INNER_LAYERS_SIZES.iter().join(" ");
+			loop {
+				let input = prompt_with_name_and_default("NN's inner layers sizes", inner_layers_sizes_default.clone());
+				let inner_layers_sizes = input.split(" ").map(|s| s.parse()).collect();
+				if let Ok(inner_layers_sizes) = inner_layers_sizes { return inner_layers_sizes }
+			}
+		}
+		let create_nn_from: CreateNNFrom = if load_nn_from_file {
+			let mut nns_files = vec![];
+			for entry in std::fs::read_dir(".").unwrap() {
+				let path = entry.unwrap().path();
+				if path.is_file() && path.extension().is_some_and(|ext| ext == NN_FILE_FORMAT_EXT) && path.file_stem().is_some() {
+					nns_files.push(path);
+				}
+			}
+			if !nns_files.is_empty() {
+				nns_files.sort();
+				for (i, nn_file) in nns_files.iter().enumerate() {
+					println!("{i}. {}", nn_file.file_stem().unwrap().display());
+				}
+				let index_of_nn_to_load = prompt_with_name_and_default("Index of NN to load", nns_files.len()-1);
+				CreateNNFrom::File(nns_files[index_of_nn_to_load].clone())
+			} else {
+				println!("No `.nn` files found, falling back to creating from NN's inner layers sizes...");
+				CreateNNFrom::InnerLayersSizes(prompt_inner_layers_sizes())
+			}
+		} else {
+			CreateNNFrom::InnerLayersSizes(prompt_inner_layers_sizes())
+		};
+		let nns_number = prompt_with_name_and_default("NNs number", training_default::NNS_NUMBER);
+		let epochs = prompt_with_name_and_default("Epochs", training_default::EPOCHS);
+		let save_every_n_epochs = prompt_with_name_and_default("Save every N epochs", training_default::SAVE_EVERY_N_EPOCHS);
+		let play_game_moves_limit = prompt_with_name_and_default("Play game moves limit", training_default::PLAY_GAME_MOVES_LIMIT);
+		let evolution_rate_init = prompt_with_name_and_default("Evolution rate init", training_default::EVOLUTION_RATE_INIT);
+		let evolution_rate_final = prompt_with_name_and_default("Evolution rate final", training_default::EVOLUTION_RATE_FINAL);
+		let win_by_points_k = prompt_with_name_and_default("Win by points K", training_default::WIN_BY_POINTS_K);
+		let draw_by_points_k = prompt_with_name_and_default("Draw by points K", training_default::DRAW_BY_POINTS_K);
+		// let algo_weights_clamp = prompt_with_name_and_default("Algo weights clamp", training_default::ALGO_WEIGHTS_CLAMP);
+		let algo_weights_clamp = training_default::ALGO_WEIGHTS_CLAMP;
+		Config {
+			compute_unit,
+			task,
+			create_nn_from,
+			epochs,
+			nns_number,
+			save_every_n_epochs,
+			play_game_moves_limit,
+			evolution_rate_init,
+			evolution_rate_final,
+			win_by_points_k,
+			draw_by_points_k,
+			algo_weights_clamp,
+		}
+	};
+
+	println!();
+	println!("Starting with config: {config:#?}");
+	println!();
+
+	if let ComputeUnit::CpuN(n) = config.compute_unit {
+		rayon::ThreadPoolBuilder::new()
+			.num_threads(n as usize)
+			.build_global()
+			.unwrap();
+	}
+
+	match config.task {
+		Task::Train => {}
+		Task::Inspect => {
+			todo!("load and show NN params/spec");
+		}
+		Task::Play => {
+			todo!();
+		}
+	}
+
+	let (inner_layers_sizes, nns) = match config.create_nn_from {
+		CreateNNFrom::InnerLayersSizes(inner_layers_sizes) => {
+			(inner_layers_sizes.clone(), Vec::from_fn(config.nns_number as usize, |_i| {
+				NN::new_random(&inner_layers_sizes, &mut rng)
+			}))
+		}
+		CreateNNFrom::File(filename) => {
+			let nn = NN::load_from_file(filename);
+			(nn.get_inner_layers_sizes(), Vec::from_fn(config.nns_number as usize, |i| {
+				if i == 0 { nn.clone() } else { nn.clone().evolved(config.evolution_rate_init, &mut rng) }
+			}))
+		}
+	};
+	assert_eq!(config.nns_number, nns.len() as u32);
+	println!("Created {} NNs", config.nns_number);
 	players.extend(
 		nns.into_iter().map(Player::NN)
 	);
@@ -177,21 +320,26 @@ fn main() {
 	// ln(erfinal/erinit) = -erdrop  =>
 	// erdrop = -ln(erfinal/erinit)  =>
 	// erdrop = ln(erinit/erfinal)
-	let evolution_rate_drop_speed = ln(training::EVOLUTION_RATE_INIT / training::EVOLUTION_RATE_FINAL);
+	let evolution_rate_drop_speed = ln(config.evolution_rate_init / config.evolution_rate_final);
 
-	for epoch in 0..training::EPOCHS {
+	for epoch in 0..config.epochs {
 		println!();
-		println!("{dashes} EPOCH {}/{} {dashes}", epoch+1, training::EPOCHS, dashes="-".repeat(42));
+		println!("{dashes} EPOCH {}/{} {dashes}", epoch+1, config.epochs, dashes="-".repeat(42));
 		println!();
 
 		for PlayerWithRatingAndStats { player: _, rating, stats } in players.iter_mut() {
-			*rating = training::DEFAULT_RATING;
+			*rating = DEFAULT_RATING;
 			*stats = PlayerInTournamentStats::new();
 		}
 
 		players.shuffle(&mut rng);
 
-		play_tournament(&mut players, training::PLAY_GAME_MOVES_LIMIT);
+		play_tournament(
+			&mut players,
+			config.play_game_moves_limit,
+			UpdateRatingsParams { win_by_points_k: config.win_by_points_k, draw_by_points_k: config.draw_by_points_k },
+			config.compute_unit,
+		);
 
 		println!();
 
@@ -213,35 +361,35 @@ fn main() {
 		{ // best vs self
 			let white = &players[0].player;
 			let black = white;
-			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
 			println!("best vs self ({}):   {}", game_result.to_char(), game.to_uci());
 		}
 		println!();
 		{ // best vs second
 			let white = &players[0].player;
 			let black = &players[1].player;
-			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
 			println!("best vs second ({}):   {}", game_result.to_char(), game.to_uci());
 		}
 		println!();
 		{ // best vs worst
 			let white = &players[0].player;
 			let black = &players[players.len()-1].player;
-			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
 			println!("best vs worst ({}):   {}", game_result.to_char(), game.to_uci());
 		}
 		println!();
 		{ // best NN vs best
 			let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
 			let black = &players[0].player;
-			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
 			println!("best NN vs best ({}):   {}", game_result.to_char(), game.to_uci());
 		}
 		println!();
 		{ // best NN vs self
 			let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
 			let black = white;
-			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
 			println!("best NN vs self ({}):   {}", game_result.to_char(), game.to_uci());
 		}
 		println!();
@@ -251,28 +399,28 @@ fn main() {
 				.k_largest_by(2, |p1, p2| p1.rating.partial_cmp(&p2.rating).unwrap())
 				.map(|p| &p.player)
 				.collect::<Vec<_>>()[..] else { unreachable!() };
-			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
 			println!("best NN vs second best NN ({}):   {}", game_result.to_char(), game.to_uci());
 		}
 		println!();
 		{ // best NN vs worst NN
 			let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
 			let black = &players.iter().rev().find(|p| p.player.is_nn()).unwrap().player;
-			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
 			println!("best NN vs worst NN ({}):   {}", game_result.to_char(), game.to_uci());
 		}
 		println!();
 		{ // best NN vs worst
 			let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
 			let black = &players[players.len()-1].player;
-			let (game_result, Some(game)) = play_game(white, black, training::PLAY_GAME_MOVES_LIMIT, true) else { unreachable!() };
+			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
 			println!("best NN vs worst ({}):   {}", game_result.to_char(), game.to_uci());
 		}
 
 		println!();
 
 		// TODO(optim): parallel evolution
-		let evolution_rate = training::EVOLUTION_RATE_INIT * exp(-evolution_rate_drop_speed * (epoch as f) / (training::EPOCHS as f - 1.));
+		let evolution_rate = config.evolution_rate_init * exp(-evolution_rate_drop_speed * (epoch as f) / (config.epochs as f - 1.));
 		macro_rules! get_random_evo_rate { () => {{
 			let k: f = rng.random_range(1. .. 10.);
 			let evo_rate = evolution_rate * if rng.random_bool(0.5) { k } else { k.recip() };
@@ -296,20 +444,20 @@ fn main() {
 					players[i] = player_to_clone.clone();
 				} else {
 					if rng.random_bool(0.1) {
-						players[i] = PlayerWithRatingAndStats::new(Player::NN(NN::new_random(nn::INNER_LAYERS_SIZES, &mut rng)));
+						players[i] = PlayerWithRatingAndStats::new(Player::NN(NN::new_random(&inner_layers_sizes, &mut rng)));
 						continue // dont evolve
 					} else {
 						players[i] = players[index_of_best_nn].clone();
 					}
 				}
 				// evolution:
-				players[i].player.evolve(get_random_evo_rate!(), &mut rng);
+				players[i].player.evolve(get_random_evo_rate!(), &mut rng, config.algo_weights_clamp);
 			}
 			// and (at least) one new random nn:
 			for i in (keep_top_n_nns..players_n).rev() {
 				if players[i].player.is_nn() {
 					// println!("reseting `player[{i}]`");
-					players[i] = PlayerWithRatingAndStats::new(Player::NN(NN::new_random(nn::INNER_LAYERS_SIZES, &mut rng)));
+					players[i] = PlayerWithRatingAndStats::new(Player::NN(NN::new_random(&inner_layers_sizes, &mut rng)));
 					break
 				}
 			}
@@ -321,7 +469,7 @@ fn main() {
 			for i in 0..players_n {
 				if !players[i].player.is_algo_mix() { continue }
 				if i == index_of_best_algo_mix { continue }
-				if players[i].rating < training::DEFAULT_RATING {
+				if players[i].rating < DEFAULT_RATING {
 					if rng.random_bool(0.1) {
 						players[i] = PlayerWithRatingAndStats::new(Player::Algo(AlgoPlayer::mix_new_random(&mut rng)));
 						continue // dont evolve
@@ -329,7 +477,7 @@ fn main() {
 						players[i] = players[index_of_best_algo_mix].clone();
 					};
 				}
-				players[i].player.evolve(get_random_evo_rate!(), &mut rng);
+				players[i].player.evolve(get_random_evo_rate!(), &mut rng, config.algo_weights_clamp);
 			}
 		}
 		{ // evolve and natsel: algo mix uss
@@ -339,7 +487,7 @@ fn main() {
 			for i in 0..players_n {
 				if !players[i].player.is_algo_mix_uss() { continue }
 				if i == index_of_best_algo_mix_uss { continue }
-				if players[i].rating < training::DEFAULT_RATING {
+				if players[i].rating < DEFAULT_RATING {
 					if rng.random_bool(0.1) {
 						players[i] = PlayerWithRatingAndStats::new(Player::Algo(AlgoPlayer::mix_uss_new_random(&mut rng)));
 						continue // dont evolve
@@ -347,11 +495,21 @@ fn main() {
 						players[i] = players[index_of_best_algo_mix_uss].clone();
 					};
 				}
-				players[i].player.evolve(get_random_evo_rate!(), &mut rng);
+				players[i].player.evolve(get_random_evo_rate!(), &mut rng, config.algo_weights_clamp);
 			}
 		}
 
 		assert_eq!(players_n_init, players.len());
+
+		if (epoch+1).is_multiple_of(config.save_every_n_epochs) {
+			let best_nn = players.iter().find(|p| p.player.is_nn()).unwrap();
+			let Player::NN(best_nn) = &best_nn.player else { unreachable!() };
+			let now = Local::now().format("%Y-%m-%d_%H-%M-%S");
+			let hash = format!("{:016x}", best_nn.calc_hash());
+			let inner_layers_sizes = best_nn.get_inner_layers_sizes().into_iter().map(|s| s.to_string()).join("_");
+			let filename = format!("{now}__{hash}__{inner_layers_sizes}.{NN_FILE_FORMAT_EXT}");
+			best_nn.save_to_file(&filename);
+		}
 
 		println!();
 		println!();
@@ -371,9 +529,14 @@ fn main() {
 
 
 
-fn play_tournament(players: &mut [PlayerWithRatingAndStats], move_limit: u32) {
+fn play_tournament(
+	players: &mut [PlayerWithRatingAndStats],
+	move_limit: u32,
+	update_ratings_params: UpdateRatingsParams,
+	compute_unit: ComputeUnit,
+) {
 	let players_n = players.len();
-	match nn::COMPUTE_UNIT {
+	match compute_unit {
 		ComputeUnit::CpuOne => {
 			print("games results: ");
 			for white_i in 0..players_n {
@@ -382,7 +545,7 @@ fn play_tournament(players: &mut [PlayerWithRatingAndStats], move_limit: u32) {
 					let [white, black] = players.get_disjoint_mut([white_i, black_i]).unwrap();
 					let (game_result, _) = play_game(&white.player, &black.player, move_limit, false);
 					update_stats(&mut white.stats, &mut black.stats, game_result);
-					update_ratings(&mut white.rating, &mut black.rating, game_result);
+					update_ratings(&mut white.rating, &mut black.rating, game_result, update_ratings_params);
 					print(game_result.to_char());
 				}
 				print(" ");
@@ -411,7 +574,7 @@ fn play_tournament(players: &mut [PlayerWithRatingAndStats], move_limit: u32) {
 				if white_i == black_i { unreachable!() }
 				let [white, black] = players.get_disjoint_mut([white_i, black_i]).unwrap();
 				update_stats(&mut white.stats, &mut black.stats, game_result);
-				update_ratings(&mut white.rating, &mut black.rating, game_result);
+				update_ratings(&mut white.rating, &mut black.rating, game_result, update_ratings_params);
 				print!("{}", game_result.to_char());
 				// println!("CHAR: {}", game_result.to_char());
 				if i % (players_n - 1) == players_n - 2 { print(" "); }
@@ -424,7 +587,14 @@ fn play_tournament(players: &mut [PlayerWithRatingAndStats], move_limit: u32) {
 	}
 }
 
-fn update_ratings(white: &mut f, black: &mut f, game_result: GameResult_) {
+#[derive(Debug, Clone, Copy)]
+struct UpdateRatingsParams { win_by_points_k: f, draw_by_points_k: f }
+fn update_ratings(
+	white: &mut f,
+	black: &mut f,
+	game_result: GameResult_,
+	params: UpdateRatingsParams,
+) {
 	use GameResult_::*;
 	match game_result {
 		WhiteWins => {
@@ -438,12 +608,12 @@ fn update_ratings(white: &mut f, black: &mut f, game_result: GameResult_) {
 			*white -= elo_rating_delta;
 		}
 		WhiteWinsByPoints => {
-			let elo_rating_delta = calc_elo_rating_delta(*white, *black) * training::WIN_BY_POINTS_K;
+			let elo_rating_delta = calc_elo_rating_delta(*white, *black) * params.win_by_points_k;
 			*white += elo_rating_delta;
 			*black -= elo_rating_delta;
 		}
 		BlackWinsByPoints => {
-			let elo_rating_delta = calc_elo_rating_delta(*black, *white) * training::WIN_BY_POINTS_K;
+			let elo_rating_delta = calc_elo_rating_delta(*black, *white) * params.win_by_points_k;
 			*black += elo_rating_delta;
 			*white -= elo_rating_delta;
 		}
@@ -453,8 +623,8 @@ fn update_ratings(white: &mut f, black: &mut f, game_result: GameResult_) {
 			// let elo_rating_delta = (elo_rating_delta_1 + elo_rating_delta_2) / 2.;
 			// let elo_rating_delta = elo_rating_delta / 1000.;
 			// TODO?
-			*black *= training::DRAW_BY_POINTS_K;
-			*white *= training::DRAW_BY_POINTS_K;
+			*black *= params.draw_by_points_k;
+			*white *= params.draw_by_points_k;
 		}
 	}
 }
@@ -596,26 +766,6 @@ enum GameResult_ {
 	DrawByPoints,
 }
 impl GameResult_ {
-	pub fn to_white_game_result(self) -> PlayerGameResult {
-		match self {
-			GameResult_::WhiteWins => PlayerGameResult::Win,
-			GameResult_::BlackWins => PlayerGameResult::Lose,
-			// GameResult_::Draw => PlayerGameResult::Draw,
-			GameResult_::WhiteWinsByPoints => PlayerGameResult::WinByPoints,
-			GameResult_::BlackWinsByPoints => PlayerGameResult::LoseByPoints,
-			GameResult_::DrawByPoints => PlayerGameResult::DrawByPoints,
-		}
-	}
-	pub fn to_black_game_result(self) -> PlayerGameResult {
-		match self {
-			GameResult_::BlackWins => PlayerGameResult::Win,
-			GameResult_::WhiteWins => PlayerGameResult::Lose,
-			// GameResult_::Draw => PlayerGameResult::Draw,
-			GameResult_::BlackWinsByPoints => PlayerGameResult::WinByPoints,
-			GameResult_::WhiteWinsByPoints => PlayerGameResult::LoseByPoints,
-			GameResult_::DrawByPoints => PlayerGameResult::DrawByPoints,
-		}
-	}
 	pub fn to_char(self) -> char {
 		use GameResult_::*;
 		match self {
@@ -628,35 +778,81 @@ impl GameResult_ {
 	}
 }
 
-#[derive(Debug, Clone, Copy)]
-#[repr(u8)]
-enum PlayerGameResult {
-	Win,
-	Lose,
-	// Draw,
-	WinByPoints,
-	LoseByPoints,
-	DrawByPoints,
-}
 
 
 
 
-
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)] // Into/From Primitive are for saving
 #[repr(u8)]
 enum ActivationFn {
+	// TODO: ReLU
 	LeakyReLU_01,
 	LeakyReLU_001,
+	// TODO: Sign
+	// TODO: Step (heaviside)
+	// TODO: SignedSqrt
+	// TODO: Sqrt (0 if x < 0)
+	// TODO: AsymSignedSqrt (if x<0 => *0.1)
+	// NOTE: dont forget to add new fn to `new_random`
 }
 impl ActivationFn {
-	pub fn eval(self, x: f) -> f {
+	// const NUMBER_OF_VARIANTS: u8 = {
+	// 	let mut res = None;
+	// 	let mut i: u8 = 0;
+	// 	while i < u8::MAX {
+	// 		if ActivationFn::try_from(i).is_err() {
+	// 			res = Some(i);
+	// 			break
+	// 		}
+	// 		i += 1;
+	// 	}
+	// 	todo("test");
+	// 	res.unwrap()
+	// };
+	pub fn new_random(rng: &mut ThreadRng) -> Self {
+		use ActivationFn::*;
+		// assert_eq!(ActivationFn::NUMBER_OF_VARIANTS, V2::NUMBER_OF_VARIANTS);
+		match_random_weighted! {rng,
+			1. => LeakyReLU_01,
+			1. => LeakyReLU_001,
+		}
+	}
+	pub fn eval(self, mut xs: DVector<f>) -> DVector<f> {
 		use ActivationFn::*;
 		match self {
-			LeakyReLU_01 => if x.is_sign_positive() { x } else { 0.1 * x },
-			LeakyReLU_001 => if x.is_sign_positive() { x } else { 0.01 * x },
+			LeakyReLU_01 => {
+				for x in xs.iter_mut() {
+					*x = if x.is_sign_positive() { *x } else { 0.1 * *x };
+				}
+				xs
+			}
+			LeakyReLU_001 => {
+				for x in xs.iter_mut() {
+					*x = if x.is_sign_positive() { *x } else { 0.01 * *x };
+				}
+				xs
+			}
+		}
+	}
+	pub fn to_hash(self) -> u64 {
+		use ActivationFn::*;
+		match self {
+			LeakyReLU_01 => 0x_807042bc_9e3e8170,
+			LeakyReLU_001 => 0x_c9d5e1e8_3f02d2a7,
+		}
+	}
+	pub fn from_hash(hash: u64) -> Self {
+		use ActivationFn::*;
+		match hash {
+			0x_807042bc_9e3e8170 => LeakyReLU_01,
+			0x_c9d5e1e8_3f02d2a7 => LeakyReLU_001,
+			_ => panic!("unknown activation function")
 		}
 	}
 }
+
+
 
 
 
@@ -672,11 +868,13 @@ impl NumberOfDepthChannels {
 		use NumberOfDepthChannels::*;
 		match self {
 			Two => 2,
-			Three { .. } => 3,
+			Three { use_opposite_signs: _ } => 3,
 			Four => 4,
 		}
 	}
 }
+
+
 
 
 
@@ -704,11 +902,6 @@ impl Player {
 			Human { name } => name.clone(),
 		}
 	}
-	pub fn is_evolvalbe(&self) -> bool {
-		self.is_nn()
-		| self.is_algo_mix()
-		| self.is_algo_mix_uss()
-	}
 	pub fn is_nn(&self) -> bool {
 		matches!(self, Player::NN(_))
 	}
@@ -718,17 +911,17 @@ impl Player {
 	pub fn is_algo_mix_uss(&self) -> bool {
 		matches!(self, Player::Algo(AlgoPlayer::MixUnderSignedSqrt(_)))
 	}
-	pub fn evolve(&mut self, evolution_rate: f, rng: &mut ThreadRng) {
+	pub fn evolve(&mut self, evolution_rate: f, rng: &mut ThreadRng, algo_weights_clamp: f) {
 		use Player::*;
 		match self {
 			NN(nn) => {
 				nn.evolve(evolution_rate, rng);
 			}
 			Algo(AlgoPlayer::Mix(mix)) => {
-				mix.evolve(evolution_rate, rng);
+				mix.evolve(evolution_rate, rng, algo_weights_clamp);
 			}
 			Algo(AlgoPlayer::MixUnderSignedSqrt(mix)) => {
-				mix.evolve(evolution_rate, rng);
+				mix.evolve(evolution_rate, rng, algo_weights_clamp);
 			}
 			Algo(_) => {}
 			Human { name: _ } => {}
@@ -740,7 +933,7 @@ impl Player {
 struct PlayerWithRatingAndStats { player: Player, rating: f, stats: PlayerInTournamentStats }
 impl PlayerWithRatingAndStats {
 	pub fn new(player: Player) -> PlayerWithRatingAndStats {
-		Self { player, rating: training::DEFAULT_RATING, stats: PlayerInTournamentStats::new() }
+		Self { player, rating: DEFAULT_RATING, stats: PlayerInTournamentStats::new() }
 	}
 }
 // #[derive(Debug, Clone, Copy)]
@@ -748,11 +941,24 @@ impl PlayerWithRatingAndStats {
 // impl Rating { fn new() -> Self { Self(training::DEFAULT_RATING) } }
 
 
+
+
+
+// struct NNSpec {
+// 	inner_layers_sizes: Vec<u32>,
+// 	activation_fns: Vec<ActivationFn>,
+// }
+
+
+
 #[derive(Clone)]
 struct NN { layers: Vec<NNLayer> }
 impl NN {
+	// pub fn from_spec(spec: NNSpec) -> Self {
+	// 	todo!()
+	// }
 	pub fn new_random(inner_layers_sizes: &[u32], rng: &mut ThreadRng) -> Self {
-		let all_layers_sizes = [&[nn::INPUT_SIZE], inner_layers_sizes, &[nn::OUTPUT_SIZE]].concat();
+		let all_layers_sizes = [&[nn_default::INPUT_SIZE], inner_layers_sizes, &[nn_default::OUTPUT_SIZE]].concat();
 		Self {
 			layers: all_layers_sizes
 				.array_windows()
@@ -792,8 +998,12 @@ impl NN {
 		for layer in self.layers.iter() {
 			v = layer.eval(v);
 		}
-		debug_assert_eq!(nn::OUTPUT_SIZE, v.len() as u32);
+		debug_assert_eq!(nn_default::OUTPUT_SIZE, v.len() as u32);
 		v[0]
+	}
+	pub fn evolved(mut self, evolution_rate: f, rng: &mut ThreadRng) -> Self {
+		self.evolve(evolution_rate, rng);
+		self
 	}
 	pub fn evolve(&mut self, evolution_rate: f, rng: &mut ThreadRng) {
 		for layer in self.layers.iter_mut() {
@@ -801,16 +1011,135 @@ impl NN {
 		}
 	}
 	pub fn calc_hash(&self) -> u64 {
+		// TODO(refactor): use MyHash
 		let mut hash: u64 = 0x_1e88d6f0_b31da73f;
 		for layer in self.layers.iter() {
 			hash ^= layer.calc_hash();
 		}
 		hash
 	}
+	pub fn get_all_layers_sizes(&self) -> Vec<u32> {
+		let mut all_layers_sizes = self.get_inner_layers_sizes();
+		all_layers_sizes.insert(0, self.layers[0].weights.ncols() as u32);
+		all_layers_sizes.push(self.layers.last().unwrap().biases.len() as u32);
+		// dbg!(&all_layers_sizes);
+		assert_eq!(nn_default::INPUT_SIZE, all_layers_sizes[0]);
+		assert_eq!(nn_default::OUTPUT_SIZE, *all_layers_sizes.last().unwrap());
+		all_layers_sizes
+	}
+	pub fn get_inner_layers_sizes(&self) -> Vec<u32> {
+		let mut inner_layers_sizes: Vec<u32> = self.layers.iter().map(|l| l.weights.ncols() as u32).collect();
+		let _input_size = inner_layers_sizes.remove(0);
+		// dbg!(&inner_layers_sizes);
+		inner_layers_sizes
+	}
+	pub fn get_activation_fns(&self) -> Vec<ActivationFn> {
+		self.layers.iter().map(|l| l.activation_fn).collect()
+	}
+	pub fn save_to_file(&self, filename: &str) {
+		std::fs::write(filename, self.to_bytes()).unwrap()
+	}
+	pub fn load_from_file(filename: PathBuf) -> Self {
+		Self::from_bytes(&std::fs::read(filename).unwrap())
+	}
+	pub fn to_bytes(&self) -> Vec<u8> {
+		// my nn file format:
+		// [ magic (8 bytes) ]
+		// [ hash of nn (u64) ]
+		// all layer sizes: [ NL, array len (u32) ] [ u32 * (NL+1) ]
+		// activations fns hashes: [ u64 * (NL) ]   // -1 bc first layer/size is not a layer, its an input
+		// layer 0:
+		//   [ NB1, number of biases (u32) ] [ f32 * NB1 ]   // yes, number of them is redundant
+		//   [ NW1, number of weights (u32) ] [ f32 * NW1 ]
+		// ...
+		// layer NL-1/-2?:
+		//   ...
+		let layers_n: u32 = self.layers.len() as _;
+		let all_layers_sizes = self.get_all_layers_sizes();
+		assert_eq!(layers_n+1, all_layers_sizes.len() as u32);
+		let activation_fns = self.get_activation_fns();
+		assert_eq!(layers_n, activation_fns.len() as u32);
+		let mut file_parts: Vec<Vec<u8>> = vec![
+			NN_FILE_FORMAT_MAGIC.to_le_bytes().to_vec(),
+			self.calc_hash().to_le_bytes().to_vec(),
+			layers_n.to_le_bytes().to_vec(),
+			all_layers_sizes.iter().flat_map(|ls| ls.to_le_bytes()).collect(),
+			activation_fns.into_iter().flat_map(|af| af.to_hash().to_le_bytes()).collect()
+		];
+		for layer in self.layers.iter() {
+			file_parts.push((layer.biases.len() as u32).to_le_bytes().to_vec());
+			file_parts.push(layer.biases.iter().flat_map(|b| b.to_le_bytes()).collect());
+			file_parts.push((layer.weights.len() as u32).to_le_bytes().to_vec());
+			file_parts.push(layer.weights.iter().flat_map(|w| w.to_le_bytes()).collect());
+		}
+		file_parts.concat()
+	}
+	pub fn from_bytes(bytes: &[u8]) -> Self {
+		// my nn file format:
+		// [ magic (8 bytes) ]
+		// [ hash of nn (u64) ]
+		// all layer sizes: [ NL, array len (u32) ] [ u32 * (NL+1) ]
+		// activations fns hashes: [ u64 * (NL) ]   // -1 bc first layer/size is not a layer, its an input
+		// layer 0:
+		//   [ NB1, number of biases (u32) ] [ f32 * NB1 ]   // yes, number of them is redundant
+		//   [ NW1, number of weights (u32) ] [ f32 * NW1 ]
+		// ...
+		// layer NL-1/-2?:
+		//   ...
+		let magic = &bytes[..8];
+		assert_eq!(NN_FILE_FORMAT_MAGIC.to_le_bytes(), magic);
+		let bytes = &bytes[8..];
+		let hash = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+		let bytes = &bytes[8..];
+		let layers_n = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+		let bytes = &bytes[4..];
+		let all_layers_sizes: Vec<u32> = bytes[..4*(layers_n+1) as usize]
+			.iter().cloned()
+			.array_chunks()
+			.map(u32::from_le_bytes)
+			.collect();
+		let bytes = &bytes[4*(layers_n+1) as usize..];
+		let activation_fns: Vec<ActivationFn> = bytes[..(8*layers_n) as usize]
+			.iter().cloned()
+			.array_chunks()
+			.map(u64::from_le_bytes)
+			.map(ActivationFn::from_hash)
+			.collect();
+		let mut bytes = &bytes[(8*layers_n) as usize..];
+		let mut layers = vec![];
+		for (activation_fn, [size_in, size_out]) in activation_fns.iter().cloned().zip_eq(all_layers_sizes.array_windows()) {
+			let biases_n = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+			bytes = &bytes[4..];
+			let biases: Vec<f> = bytes[..(4*biases_n) as usize]
+				.iter().cloned()
+				.array_chunks()
+				.map(f32::from_le_bytes)
+				.collect();
+			bytes = &bytes[(4*biases_n) as usize..];
+			let biases = DVector::from(biases);
+			let weights_n = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+			bytes = &bytes[4..];
+			let weights = bytes[..(4*weights_n) as usize]
+				.iter().cloned()
+				.array_chunks()
+				.map(f32::from_le_bytes);
+			bytes = &bytes[(4*weights_n) as usize..];
+			let weights = DMatrix::from_iterator(*size_out as usize, *size_in as usize, weights);
+			layers.push(NNLayer { weights, biases, activation_fn });
+		}
+		assert!(bytes.is_empty());
+		let nn = NN { layers };
+		assert_eq!(hash, nn.calc_hash());
+		nn
+	}
 }
 
 #[derive(Clone)]
-struct NNLayer { weights: DMatrix<f>, biases: DVector<f> }
+struct NNLayer {
+	weights: DMatrix<f>,
+	biases: DVector<f>,
+	activation_fn: ActivationFn,
+}
 impl NNLayer {
 	pub fn new_random(size_in: u32, size_out: u32, rng: &mut ThreadRng) -> Self {
 		// TODO(optim): dont use `random_range` repeatedly, instead create uniform distribution and multi sample it
@@ -818,23 +1147,25 @@ impl NNLayer {
 			weights: DMatrix::from_fn(
 				size_out as usize,
 				size_in as usize,
-				|_i, _j| rng.random_range(nn::W_MIN .. nn::W_MAX)
+				|_i, _j| rng.random_range(nn_default::W_MIN .. nn_default::W_MAX)
 			),
 			biases: DVector::from_fn(
 				size_out as usize,
-				|_i, _| rng.random_range(nn::S_MIN .. nn::S_MAX) // TODO?: `S_MAX` dependant on `size_out`
+				|_i, _| rng.random_range(nn_default::S_MIN .. nn_default::S_MAX) // TODO?: `S_MAX` dependant on `size_out`
 			),
+			activation_fn: ActivationFn::new_random(rng),
 		}
 	}
 	pub fn calc_hash(&self) -> u64 {
-		let mut hash: u64 = 0x_c695d51f_e59c7bed;
-		hash ^= calc_hash_of_float_slice(self.biases.as_slice());
-		hash ^= calc_hash_of_float_slice(self.weights.as_slice());
-		hash
+		let mut hash = MyHash::from_seed(0x_c695d51f_e59c7bed);
+		hash.hash(self.biases.as_slice());
+		hash.hash(self.weights.as_slice());
+		hash.hash(self.activation_fn.to_hash());
+		hash.finish()
 	}
 	pub fn eval(&self, input: DVector<f>) -> DVector<f> {
 		let sums = &self.weights * input + &self.biases;
-		sums.map(|sum| nn::ACTIVATION_FN.eval(sum))
+		self.activation_fn.eval(sums)
 	}
 	pub fn evolve(&mut self, evolution_rate: f, rng: &mut ThreadRng) {
 		// TODO(optim): generate indices to evolve
@@ -847,6 +1178,9 @@ impl NNLayer {
 			if rng.random_bool(evolution_rate as f64) {
 				evolve_weight(weight, rng);
 			}
+		}
+		if rng.random_bool((evolution_rate/10.) as f64) {
+			self.activation_fn = ActivationFn::new_random(rng);
 		}
 	}
 }
@@ -901,7 +1235,7 @@ fn evolve_value(v: &mut f, rng: &mut ThreadRng) {
 
 // TODO: test
 fn board_to_vector_for_nn(board: &Board) -> Vec<f> {
-	let mut result: Vec<f> = vec![0.; nn::INPUT_SIZE as usize];
+	let mut result: Vec<f> = vec![0.; nn_default::INPUT_SIZE as usize];
 	let board_builder: BoardBuilder = board.into();
 	for (index_in_64, square) in ALL_SQUARES.into_iter().enumerate() {
 		let option_piece_and_color: Option<(Piece, Color)> = board_builder[square];
@@ -936,7 +1270,7 @@ fn board_to_vector_for_nn(board: &Board) -> Vec<f> {
 				}
 			}
 
-			match nn::NUMBER_OF_DEPTH_CHANNELS {
+			match nn_default::NUMBER_OF_DEPTH_CHANNELS {
 				NumberOfDepthChannels::Two => {}
 				NumberOfDepthChannels::Three { use_opposite_signs } => {
 					// wab = white and black
@@ -1199,7 +1533,7 @@ impl AlgoPlayerMix {
 		let Self { random_mover, material_delta, material_delta_stm, neg_material_delta, neg_material_delta_stm, pieces_freedom, pieces_freedom_stm, neg_pieces_freedom, neg_pieces_freedom_stm, pieces_freedom_diff, pieces_freedom_diff_stm, neg_pieces_freedom_diff, neg_pieces_freedom_diff_stm } = *self;
 		[random_mover, material_delta, material_delta_stm, neg_material_delta, neg_material_delta_stm, pieces_freedom, pieces_freedom_stm, neg_pieces_freedom, neg_pieces_freedom_stm, pieces_freedom_diff, pieces_freedom_diff_stm, neg_pieces_freedom_diff, neg_pieces_freedom_diff_stm]
 	}
-	pub fn evolve(&mut self, evolution_rate: f, rng: &mut ThreadRng) {
+	pub fn evolve(&mut self, evolution_rate: f, rng: &mut ThreadRng, algo_weights_clamp: f) {
 		let mut ws = self.to_array();
 		for w in ws.iter_mut() {
 			if rng.random_bool(evolution_rate as f64) {
@@ -1209,7 +1543,7 @@ impl AlgoPlayerMix {
 			if rng.random_bool(evolution_rate as f64) {
 				evolve_value(w, rng);
 			}
-			*w = w.clamp(0., training::ALGO_WEIGHTS_CLAMP);
+			*w = w.clamp(0., algo_weights_clamp);
 		}
 		let ws_sum: f = ws.iter().sum();
 		if ws_sum != 0. {
@@ -1218,9 +1552,9 @@ impl AlgoPlayerMix {
 		*self = Self::from_array(ws);
 	}
 	pub fn calc_hash(&self) -> u64 {
-		let mut hash: u64 = 0x_7dc29f45_3decba81;
-		hash ^= calc_hash_of_float_slice(self.to_array().as_slice());
-		hash
+		let mut hash = MyHash::from_seed(0x_7dc29f45_3decba81);
+		hash.hash(self.to_array().as_slice());
+		hash.finish()
 	}
 }
 impl ToString for AlgoPlayerMix {
@@ -1249,33 +1583,53 @@ impl ToString for AlgoPlayerMix {
 
 
 
-pub fn calc_hash_of_float_slice(values: &[f]) -> u64 {
-	let mut hash: u64 = 0x_2e7ef108_6fce8375;
-	for v in values {
-		let bits = v.to_bits() as u64;
-		// hash-in value's bits:
-		hash ^= if hash.count_ones() % 2 == 0 { bits } else { bits << 32 };
-		// shuffle bits:
-		hash = match (hash.count_ones() % 2 == 0, hash % 2 == 0) {
-			(true, true) => hash.reverse_bits(),
-			(true, false) => !hash,
-			(false, true) => {
-				let [b0,b1,b2,b3, b4,b5,b6,b7] = hash.to_ne_bytes();
-				u64::from_ne_bytes([b4,b5,b6,b7, b0,b1,b2,b3])
-			}
-			(false, false) => {
-				let [b0,b1,b2,b3, b4,b5,b6,b7] = hash.to_ne_bytes();
-				u64::from_ne_bytes([b0,b2,b4,b6, b1,b3,b5,b7])
+struct MyHash { value: u64 }
+impl MyHash {
+	// fn new() -> Self { ... }
+	fn from_seed(seed: u64) -> Self { Self { value: seed } }
+	fn finish(self) -> u64 { self.value }
+}
+pub trait MyHash_<T> {
+	fn hash(&mut self, obj: T);
+}
+impl MyHash_<u64> for MyHash {
+	fn hash(&mut self, obj: u64) {
+		self.value ^= obj;
+	}
+}
+impl MyHash_<&[f]> for MyHash {
+	fn hash(&mut self, obj: &[f]) {
+		// let mut hash: u64 = 0x_2e7ef108_6fce8375;
+		let mut hash: u64 = self.value;
+		hash ^= obj.len() as u64;
+		for v in obj {
+			let bits = v.to_bits() as u64;
+			// hash-in value's bits:
+			hash ^= if hash.count_ones() % 2 == 0 { bits } else { bits << 32 };
+			// shuffle bits:
+			hash = match (hash.count_ones() % 2 == 0, hash % 2 == 0) {
+				(true, true) => hash.reverse_bits(),
+				(true, false) => !hash,
+				(false, true) => {
+					let [b0,b1,b2,b3, b4,b5,b6,b7] = hash.to_le_bytes();
+					u64::from_le_bytes([b4,b5,b6,b7, b0,b1,b2,b3])
+				}
+				(false, false) => {
+					let [b0,b1,b2,b3, b4,b5,b6,b7] = hash.to_le_bytes();
+					u64::from_le_bytes([b0,b2,b4,b6, b1,b3,b5,b7])
+				}
+				// another idea: rotate bytes
 			}
 		}
+		self.value = hash;
 	}
-	hash
 }
 
 
 
 
 
+#[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 enum ComputeUnit {
 	CpuOne,
@@ -1291,7 +1645,7 @@ enum ComputeUnit {
 pub trait ToUci { fn to_uci(&self) -> String; }
 impl ToUci for Game {
 	fn to_uci(&self) -> String {
-		let moves_strs: Vec<String> = self.actions().into_iter().flat_map(|action| {
+		let moves_strs: Vec<String> = self.actions().iter().flat_map(|action| {
 			match action {
 				Action::MakeMove(move_) => Some(move_.to_string()),
 				// Action::OfferDraw(Color) => todo!(),
@@ -1320,6 +1674,7 @@ pub type f = f32;
 mod tests {
 	use super::*;
 
+	#[allow(non_snake_case)]
 	mod calc_elo_rating_delta {
 		use super::*;
 		#[test] fn strong_wins() { assert_eq!(9.090909, calc_elo_rating_delta(1200., 800.)) }
