@@ -14,6 +14,7 @@
 )]
 
 #![allow(
+	clippy::just_underscores_and_digits,
 	clippy::let_and_return,
 	clippy::manual_is_multiple_of,
 	clippy::map_flatten,
@@ -27,15 +28,18 @@ use chess::{ALL_SQUARES, Action, Board, BoardBuilder, ChessMove, Color, Game, Ga
 use chrono::Local;
 use itertools::Itertools;
 use nalgebra::{DMatrix, DVector};
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 use rand::{RngExt, rng, rngs::ThreadRng, seq::SliceRandom};
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
+mod activation_fns;
 mod extensions;
 mod math;
 mod math_aliases;
 mod typesafe_rng;
 mod utils_io;
 
+use activation_fns::*;
 use extensions::*;
 use math::*;
 use math_aliases::*;
@@ -247,6 +251,7 @@ fn main() {
 		let nns_number = prompt_with_name_and_default("NNs number", training_default::NNS_NUMBER);
 		let epochs = prompt_with_name_and_default("Epochs", training_default::EPOCHS);
 		let save_every_n_epochs = prompt_with_name_and_default("Save every N epochs", training_default::SAVE_EVERY_N_EPOCHS);
+		let save_every_n_epochs = if save_every_n_epochs != 0 { save_every_n_epochs } else { u32::MAX };
 		let play_game_moves_limit = prompt_with_name_and_default("Play game moves limit", training_default::PLAY_GAME_MOVES_LIMIT);
 		let evolution_rate_init = prompt_with_name_and_default("Evolution rate init", training_default::EVOLUTION_RATE_INIT);
 		let evolution_rate_final = prompt_with_name_and_default("Evolution rate final", training_default::EVOLUTION_RATE_FINAL);
@@ -783,17 +788,36 @@ impl GameResult_ {
 
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)] // Into/From Primitive are for saving
+#[derive(Debug, Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
 #[repr(u8)]
 enum ActivationFn {
-	// TODO: ReLU
+	// src: https://en.wikipedia.org/wiki/Activation_function#Table_of_activation_functions
+	ReLU,
 	LeakyReLU_01,
 	LeakyReLU_001,
-	// TODO: Sign
-	// TODO: Step (heaviside)
-	// TODO: SignedSqrt
-	// TODO: Sqrt (0 if x < 0)
-	// TODO: AsymSignedSqrt (if x<0 => *0.1)
+	Sign,
+	Step,
+	Sigmoid,
+	Tanh,
+	SoftSign,
+	SoftPlus,
+	ExpLU,
+	SiLU,
+	ELiSH,
+	Gaussian,
+	Clamp01,
+	ReSqrt, // 0 if x < 0
+	SignedSqrt,
+	LeakyReSqrt01, // if x<0 => *0.1
+	LeakyReSqrt001,
+	SignedSqrtP1,
+	ReSquare,
+	SignedSquare,
+	LeakyReSquare01, // if x<0 => *0.1
+	LeakyReSquare001,
+	Sinc,
+	Softmax,
+	Maxout,
 	// NOTE: dont forget to add new fn to `new_random`
 }
 impl ActivationFn {
@@ -810,44 +834,152 @@ impl ActivationFn {
 	// 	todo("test");
 	// 	res.unwrap()
 	// };
+	pub /* const */ fn get_number_of_variants() -> u8 {
+		for i in 0.. {
+			if ActivationFn::try_from(i).is_err() {
+				return i
+			}
+		}
+		unreachable!()
+	}
+	pub fn get_all_variants() -> Vec<ActivationFn> { // [ActivationFn; NUMBER_OF_VARIANTS]
+		Vec::from_fn(Self::get_number_of_variants() as usize, |i| ActivationFn::try_from(i as u8).unwrap())
+	}
 	pub fn new_random(rng: &mut ThreadRng) -> Self {
 		use ActivationFn::*;
-		// assert_eq!(ActivationFn::NUMBER_OF_VARIANTS, V2::NUMBER_OF_VARIANTS);
-		match_random_weighted! {rng,
-			1. => LeakyReLU_01,
-			1. => LeakyReLU_001,
+		// assert_eq!(ActivationFn::NUMBER_OF_VARIANTS, VN::NUMBER_OF_VARIANTS);
+		use V26::*;
+		assert_eq!(ActivationFn::get_number_of_variants(), V26::NUMBER_OF_VARIANTS);
+		match rng.random_variant() {
+			_1 => ReLU,
+			_2 => LeakyReLU_01,
+			_3 => LeakyReLU_001,
+			_4 => Sign,
+			_5 => Step,
+			_6 => Sigmoid,
+			_7 => Tanh,
+			_8 => SoftSign,
+			_9 => SoftPlus,
+			_10 => ExpLU,
+			_11 => SiLU,
+			_12 => ELiSH,
+			_13 => Gaussian,
+			_14 => Clamp01,
+			_15 => ReSqrt,
+			_16 => SignedSqrt,
+			_17 => LeakyReSqrt01,
+			_18 => LeakyReSqrt001,
+			_19 => SignedSqrtP1,
+			_20 => ReSquare,
+			_21 => SignedSquare,
+			_22 => LeakyReSquare01,
+			_23 => LeakyReSquare001,
+			_24 => Sinc,
+			_25 => Softmax,
+			_26 => Maxout,
 		}
 	}
-	pub fn eval(self, mut xs: DVector<f>) -> DVector<f> {
+	pub fn eval(self, xs: DVector<f>) -> DVector<f> {
 		use ActivationFn::*;
 		match self {
-			LeakyReLU_01 => {
-				for x in xs.iter_mut() {
-					*x = if x.is_sign_positive() { *x } else { 0.1 * *x };
-				}
-				xs
+			ReLU => xs.map(relu),
+			LeakyReLU_01 => xs.map(leaky_relu_01),
+			LeakyReLU_001 => xs.map(leaky_relu_001),
+			Sign => xs.map(sign),
+			Step => xs.map(step),
+			Sigmoid => xs.map(sigmoid),
+			Tanh => xs.map(tanh),
+			SoftSign => xs.map(soft_sign),
+			SoftPlus => xs.map(soft_plus),
+			ExpLU => xs.map(explu),
+			SiLU => xs.map(silu),
+			ELiSH => xs.map(elish),
+			Gaussian => xs.map(gaussian),
+			Clamp01 => xs.map(clamp01),
+			ReSqrt => xs.map(resqrt),
+			SignedSqrt => xs.map(signed_sqrt),
+			LeakyReSqrt01 => xs.map(leaky_resqrt_01),
+			LeakyReSqrt001 => xs.map(leaky_resqrt_001),
+			SignedSqrtP1 => xs.map(signed_sqrt_p1),
+			ReSquare => xs.map(resquare),
+			SignedSquare => xs.map(signed_square),
+			LeakyReSquare01 => xs.map(leaky_resquare_01),
+			LeakyReSquare001 => xs.map(leaky_resquare_001),
+			Sinc => xs.map(sinc),
+			Softmax => {
+				let exps = xs.map(exp);
+				let exp_sum = exps.sum();
+				exps / exp_sum
 			}
-			LeakyReLU_001 => {
-				for x in xs.iter_mut() {
-					*x = if x.is_sign_positive() { *x } else { 0.01 * *x };
-				}
-				xs
+			Maxout => {
+				let index_of_max = xs.as_slice().index_of_max().unwrap();
+				let mut one_hot = DVector::zeros(xs.len());
+				one_hot[index_of_max] = 1.;
+				one_hot
 			}
 		}
 	}
 	pub fn to_hash(self) -> u64 {
 		use ActivationFn::*;
 		match self {
+			ReLU => 0x_39b728e5_6ca7f4a8,
 			LeakyReLU_01 => 0x_807042bc_9e3e8170,
 			LeakyReLU_001 => 0x_c9d5e1e8_3f02d2a7,
+			Sign => 0x_a677c501_3b6fcda2,
+			Step => 0x_f85d4bb4_12b20a92,
+			Sigmoid => 0x_bf8bd5a3_05d3be95,
+			Tanh => 0x_deba1dd1_d30ee4b3,
+			SoftSign => 0x_e9067194_5163f143,
+			SoftPlus => 0x_520545ee_98ca6be2,
+			ExpLU => 0x_1334fd2f_27429035,
+			SiLU => 0x_c4921e89_35e84654,
+			ELiSH => 0x_03f8f2c8_37165a17,
+			Gaussian => 0x_61424e39_bf3c44a7,
+			Clamp01 => 0x_b35ef484_34e47d87,
+			ReSqrt => 0x_1b969ca2_d42487d6,
+			SignedSqrt => 0x_07a6a02f_2f82a958,
+			LeakyReSqrt01 => 0x_a09f1663_655ca19e,
+			LeakyReSqrt001 => 0x_02e4e717_3ac11f84,
+			SignedSqrtP1 => 0x_2e8351d3_1cd6db2e,
+			ReSquare => 0x_4193da3a_50e20467,
+			SignedSquare => 0x_d588873b_771910de,
+			LeakyReSquare01 => 0x_f84207c5_34b62a65,
+			LeakyReSquare001 => 0x_3299d4f0_b20d7e00,
+			Sinc => 0x_4a2831dc_c744401b,
+			Softmax => 0x_f0fc8c2d_b6a422db,
+			Maxout => 0x_36bc3c93_6f06f7f8,
 		}
 	}
 	pub fn from_hash(hash: u64) -> Self {
 		use ActivationFn::*;
 		match hash {
+			0x_39b728e5_6ca7f4a8 => ReLU,
 			0x_807042bc_9e3e8170 => LeakyReLU_01,
 			0x_c9d5e1e8_3f02d2a7 => LeakyReLU_001,
-			_ => panic!("unknown activation function")
+			0x_a677c501_3b6fcda2 => Sign,
+			0x_f85d4bb4_12b20a92 => Step,
+			0x_bf8bd5a3_05d3be95 => Sigmoid,
+			0x_deba1dd1_d30ee4b3 => Tanh,
+			0x_e9067194_5163f143 => SoftSign,
+			0x_520545ee_98ca6be2 => SoftPlus,
+			0x_1334fd2f_27429035 => ExpLU,
+			0x_c4921e89_35e84654 => SiLU,
+			0x_03f8f2c8_37165a17 => ELiSH,
+			0x_61424e39_bf3c44a7 => Gaussian,
+			0x_b35ef484_34e47d87 => Clamp01,
+			0x_1b969ca2_d42487d6 => ReSqrt,
+			0x_07a6a02f_2f82a958 => SignedSqrt,
+			0x_a09f1663_655ca19e => LeakyReSqrt01,
+			0x_02e4e717_3ac11f84 => LeakyReSqrt001,
+			0x_2e8351d3_1cd6db2e => SignedSqrtP1,
+			0x_4193da3a_50e20467 => ReSquare,
+			0x_d588873b_771910de => SignedSquare,
+			0x_f84207c5_34b62a65 => LeakyReSquare01,
+			0x_3299d4f0_b20d7e00 => LeakyReSquare001,
+			0x_4a2831dc_c744401b => Sinc,
+			0x_f0fc8c2d_b6a422db => Softmax,
+			0x_36bc3c93_6f06f7f8 => Maxout,
+			_ => panic!("unknown activation function, hash: {hash}")
 		}
 	}
 }
@@ -1683,6 +1815,16 @@ mod tests {
 		#[test] fn white_1200__black_800__black_wins() { assert_eq!(90.90909, calc_elo_rating_delta(800., 1200.)) }
 		#[test] fn white_800__black_1200__white_wins() { assert_eq!(90.90909, calc_elo_rating_delta(800., 1200.)) }
 		#[test] fn white_800__black_1200__black_wins() { assert_eq!(9.090909, calc_elo_rating_delta(1200., 800.)) }
+	}
+
+	mod activation_fns {
+		use super::*;
+		#[test]
+		fn to_from_hash_identity() {
+			for af in ActivationFn::get_all_variants() {
+				assert_eq!(af, ActivationFn::from_hash(af.to_hash()));
+			}
+		}
 	}
 }
 
