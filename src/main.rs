@@ -83,13 +83,14 @@ mod nn_default {
 	// pub const INNER_LAYERS_SIZES: &[u32] = &[100, 30, 10, 5];
 	// pub const INNER_LAYERS_SIZES: &[u32] = &[30, 10, 5]; // for tests
 
+	pub const EXTRA_NOISE_INPUT: bool = false;
 	// pub const NUMBER_OF_DEPTH_CHANNELS: NumberOfDepthChannels = NumberOfDepthChannels::Two;
 	// pub const NUMBER_OF_DEPTH_CHANNELS: NumberOfDepthChannels = NumberOfDepthChannels::Three { use_opposite_signs: false };
 	pub const NUMBER_OF_DEPTH_CHANNELS: NumberOfDepthChannels = NumberOfDepthChannels::Four;
 	pub const NUMBER_OF_DIFFERENT_CHESS_PIECES: u32 = chess::NUM_PIECES as u32; // 6
 	pub const NUMBER_OF_SQUARES_ON_CHESS_BOARD: u32 = chess::NUM_SQUARES as u32; // 64
-	pub const INPUT_SIZE_PER_COLOR_CHANNEL: u32 = NUMBER_OF_DIFFERENT_CHESS_PIECES * NUMBER_OF_SQUARES_ON_CHESS_BOARD; // 384
-	pub const INPUT_SIZE: u32 = NUMBER_OF_DEPTH_CHANNELS.to_u32() * INPUT_SIZE_PER_COLOR_CHANNEL; // 768 or 1152 or 1536
+	pub const INPUT_SIZE_PER_DEPTH_CHANNEL: u32 = NUMBER_OF_DIFFERENT_CHESS_PIECES * NUMBER_OF_SQUARES_ON_CHESS_BOARD; // 384
+	pub const INPUT_SIZE: u32 = NUMBER_OF_DEPTH_CHANNELS.to_u32() * INPUT_SIZE_PER_DEPTH_CHANNEL; // 768 or 1152 or 1536
 	pub const OUTPUT_SIZE: u32 = 1;
 
 	// TODO(refactor): move outside?
@@ -250,7 +251,7 @@ fn main() {
 		};
 		let nns_number = prompt_with_name_and_default("NNs number", training_default::NNS_NUMBER);
 		let epochs = prompt_with_name_and_default("Epochs", training_default::EPOCHS);
-		let save_every_n_epochs = prompt_with_name_and_default("Save every N epochs", training_default::SAVE_EVERY_N_EPOCHS);
+		let save_every_n_epochs = prompt_with_name_and_default("Save every N epochs (0 for never)", training_default::SAVE_EVERY_N_EPOCHS);
 		let save_every_n_epochs = if save_every_n_epochs != 0 { save_every_n_epochs } else { u32::MAX };
 		let play_game_moves_limit = prompt_with_name_and_default("Play game moves limit", training_default::PLAY_GAME_MOVES_LIMIT);
 		let evolution_rate_init = prompt_with_name_and_default("Evolution rate init", training_default::EVOLUTION_RATE_INIT);
@@ -800,10 +801,10 @@ enum ActivationFn {
 	Sigmoid,
 	Tanh,
 	SoftSign,
-	SoftPlus,
+	// SoftPlus,
 	ExpLU,
 	SiLU,
-	ELiSH,
+	// ELiSH,
 	Gaussian,
 	Clamp01,
 	ReSqrt, // 0 if x < 0
@@ -848,8 +849,8 @@ impl ActivationFn {
 	pub fn new_random(rng: &mut ThreadRng) -> Self {
 		use ActivationFn::*;
 		// assert_eq!(ActivationFn::NUMBER_OF_VARIANTS, VN::NUMBER_OF_VARIANTS);
-		use V26::*;
-		assert_eq!(ActivationFn::get_number_of_variants(), V26::NUMBER_OF_VARIANTS);
+		use V24::*;
+		assert_eq!(ActivationFn::get_number_of_variants(), V24::NUMBER_OF_VARIANTS);
 		match rng.random_variant() {
 			_1 => ReLU,
 			_2 => LeakyReLU_01,
@@ -859,24 +860,24 @@ impl ActivationFn {
 			_6 => Sigmoid,
 			_7 => Tanh,
 			_8 => SoftSign,
-			_9 => SoftPlus,
-			_10 => ExpLU,
-			_11 => SiLU,
-			_12 => ELiSH,
-			_13 => Gaussian,
-			_14 => Clamp01,
-			_15 => ReSqrt,
-			_16 => SignedSqrt,
-			_17 => LeakyReSqrt01,
-			_18 => LeakyReSqrt001,
-			_19 => SignedSqrtP1,
-			_20 => ReSquare,
-			_21 => SignedSquare,
-			_22 => LeakyReSquare01,
-			_23 => LeakyReSquare001,
-			_24 => Sinc,
-			_25 => Softmax,
-			_26 => Maxout,
+			// _ => SoftPlus,
+			_9 => ExpLU,
+			_10 => SiLU,
+			// _ => ELiSH,
+			_11 => Gaussian,
+			_12 => Clamp01,
+			_13 => ReSqrt,
+			_14 => SignedSqrt,
+			_15 => LeakyReSqrt01,
+			_16 => LeakyReSqrt001,
+			_17 => SignedSqrtP1,
+			_18 => ReSquare,
+			_19 => SignedSquare,
+			_20 => LeakyReSquare01,
+			_21 => LeakyReSquare001,
+			_22 => Sinc,
+			_23 => Softmax,
+			_24 => Maxout,
 		}
 	}
 	pub fn eval(self, xs: DVector<f>) -> DVector<f> {
@@ -890,10 +891,10 @@ impl ActivationFn {
 			Sigmoid => xs.map(sigmoid),
 			Tanh => xs.map(tanh),
 			SoftSign => xs.map(soft_sign),
-			SoftPlus => xs.map(soft_plus),
+			// SoftPlus => xs.map(soft_plus),
 			ExpLU => xs.map(explu),
 			SiLU => xs.map(silu),
-			ELiSH => xs.map(elish),
+			// ELiSH => xs.map(elish),
 			Gaussian => xs.map(gaussian),
 			Clamp01 => xs.map(clamp01),
 			ReSqrt => xs.map(resqrt),
@@ -907,6 +908,7 @@ impl ActivationFn {
 			LeakyReSquare001 => xs.map(leaky_resquare_001),
 			Sinc => xs.map(sinc),
 			Softmax => {
+				if xs.iter().any(|&x| abs(x) > 80. /* ln(f32::MAX) = 88.72284 */) { return Self::Maxout.eval(xs) }
 				let exps = xs.map(exp);
 				let exp_sum = exps.sum();
 				exps / exp_sum
@@ -930,10 +932,10 @@ impl ActivationFn {
 			Sigmoid => 0x_bf8bd5a3_05d3be95,
 			Tanh => 0x_deba1dd1_d30ee4b3,
 			SoftSign => 0x_e9067194_5163f143,
-			SoftPlus => 0x_520545ee_98ca6be2,
+			// SoftPlus => 0x_520545ee_98ca6be2,
 			ExpLU => 0x_1334fd2f_27429035,
 			SiLU => 0x_c4921e89_35e84654,
-			ELiSH => 0x_03f8f2c8_37165a17,
+			// ELiSH => 0x_03f8f2c8_37165a17,
 			Gaussian => 0x_61424e39_bf3c44a7,
 			Clamp01 => 0x_b35ef484_34e47d87,
 			ReSqrt => 0x_1b969ca2_d42487d6,
@@ -961,10 +963,10 @@ impl ActivationFn {
 			0x_bf8bd5a3_05d3be95 => Sigmoid,
 			0x_deba1dd1_d30ee4b3 => Tanh,
 			0x_e9067194_5163f143 => SoftSign,
-			0x_520545ee_98ca6be2 => SoftPlus,
+			// 0x_520545ee_98ca6be2 => SoftPlus,
 			0x_1334fd2f_27429035 => ExpLU,
 			0x_c4921e89_35e84654 => SiLU,
-			0x_03f8f2c8_37165a17 => ELiSH,
+			// 0x_03f8f2c8_37165a17 => ELiSH,
 			0x_61424e39_bf3c44a7 => Gaussian,
 			0x_b35ef484_34e47d87 => Clamp01,
 			0x_1b969ca2_d42487d6 => ReSqrt,
@@ -1076,19 +1078,32 @@ impl PlayerWithRatingAndStats {
 
 
 
-// struct NNSpec {
-// 	inner_layers_sizes: Vec<u32>,
-// 	activation_fns: Vec<ActivationFn>,
-// }
+pub struct NNSpec {
+	inner_layers_sizes: Vec<u32>,
+	activation_fns: Vec<ActivationFn>,
+}
+impl NNSpec {
+	pub fn new(inner_layers_sizes: Vec<u32>, activation_fns: Vec<ActivationFn>) -> Self {
+		Self { inner_layers_sizes, activation_fns }
+	}
+}
 
 
 
 #[derive(Clone)]
 struct NN { layers: Vec<NNLayer> }
 impl NN {
-	// pub fn from_spec(spec: NNSpec) -> Self {
-	// 	todo!()
-	// }
+	pub fn new_random_from_spec(spec: NNSpec, rng: &mut ThreadRng) -> Self {
+		let all_layers_sizes = [&[nn_default::INPUT_SIZE], spec.inner_layers_sizes.as_slice(), &[nn_default::OUTPUT_SIZE]].concat();
+		Self {
+			layers: all_layers_sizes
+				.array_windows()
+				.cloned()
+				.zip_eq(spec.activation_fns)
+				.map(|([size_in, size_out], af)| NNLayer::new_random_from_spec(size_in, size_out, af, rng))
+				.collect()
+		}
+	}
 	pub fn new_random(inner_layers_sizes: &[u32], rng: &mut ThreadRng) -> Self {
 		let all_layers_sizes = [&[nn_default::INPUT_SIZE], inner_layers_sizes, &[nn_default::OUTPUT_SIZE]].concat();
 		Self {
@@ -1110,12 +1125,38 @@ impl NN {
 			Color::White => {
 				moves_and_scores
 					.max_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
-					.unwrap()
+					.unwrap_or_else(|| {
+						println!();
+						dbg!(self.get_activation_fns());
+						let moves_and_scores = MoveGen::new_legal(board)
+							.map(|move_| {
+								let board_after_move = board.make_move_new(move_);
+								let score = self.eval_board(&board_after_move);
+								(move_, score)
+							});
+						for (move_, score) in moves_and_scores {
+							println!("{move_}: {score}");
+						}
+						panic!()
+					})
 			}
 			Color::Black => {
 				moves_and_scores
 					.min_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
-					.unwrap()
+					.unwrap_or_else(|| {
+						println!();
+						dbg!(self.get_activation_fns());
+						let moves_and_scores = MoveGen::new_legal(board)
+							.map(|move_| {
+								let board_after_move = board.make_move_new(move_);
+								let score = self.eval_board(&board_after_move);
+								(move_, score)
+							});
+						for (move_, score) in moves_and_scores {
+							println!("{move_}: {score}");
+						}
+						panic!()
+					})
 			}
 		};
 		best_move
@@ -1273,6 +1314,21 @@ struct NNLayer {
 	activation_fn: ActivationFn,
 }
 impl NNLayer {
+	pub fn new_random_from_spec(size_in: u32, size_out: u32, activation_fn: ActivationFn, rng: &mut ThreadRng) -> Self {
+		// TODO(optim): dont use `random_range` repeatedly, instead create uniform distribution and multi sample it
+		Self {
+			weights: DMatrix::from_fn(
+				size_out as usize,
+				size_in as usize,
+				|_i, _j| rng.random_range(nn_default::W_MIN .. nn_default::W_MAX)
+			),
+			biases: DVector::from_fn(
+				size_out as usize,
+				|_i, _| rng.random_range(nn_default::S_MIN .. nn_default::S_MAX) // TODO?: `S_MAX` dependant on `size_out`
+			),
+			activation_fn,
+		}
+	}
 	pub fn new_random(size_in: u32, size_out: u32, rng: &mut ThreadRng) -> Self {
 		// TODO(optim): dont use `random_range` repeatedly, instead create uniform distribution and multi sample it
 		Self {
@@ -1367,6 +1423,7 @@ fn evolve_value(v: &mut f, rng: &mut ThreadRng) {
 
 // TODO: test
 fn board_to_vector_for_nn(board: &Board) -> Vec<f> {
+	if nn_default::EXTRA_NOISE_INPUT { todo!() }
 	let mut result: Vec<f> = vec![0.; nn_default::INPUT_SIZE as usize];
 	let board_builder: BoardBuilder = board.into();
 	for (index_in_64, square) in ALL_SQUARES.into_iter().enumerate() {
@@ -1509,6 +1566,7 @@ impl AlgoPlayer {
 						moves_and_scores
 							.max_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
 							.unwrap_or_else(|| {
+								println!();
 								dbg!(self);
 								let moves_and_scores = MoveGen::new_legal(board)
 									.map(|move_| {
@@ -1516,7 +1574,9 @@ impl AlgoPlayer {
 										let score = self.eval_board(&board_after_move, rng);
 										(move_, score)
 									});
-								dbg!(moves_and_scores.collect::<Vec<_>>());
+								for (move_, score) in moves_and_scores {
+									println!("{move_}: {score}");
+								}
 								panic!()
 							})
 					}
@@ -1524,6 +1584,7 @@ impl AlgoPlayer {
 						moves_and_scores
 							.min_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
 							.unwrap_or_else(|| {
+								println!();
 								dbg!(self);
 								let moves_and_scores = MoveGen::new_legal(board)
 									.map(|move_| {
@@ -1531,7 +1592,9 @@ impl AlgoPlayer {
 										let score = self.eval_board(&board_after_move, rng);
 										(move_, score)
 									});
-								dbg!(moves_and_scores.collect::<Vec<_>>());
+								for (move_, score) in moves_and_scores {
+									println!("{move_}: {score}");
+								}
 								panic!()
 							})
 					}
