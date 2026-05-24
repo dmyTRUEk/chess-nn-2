@@ -1099,7 +1099,7 @@ impl NNSpec {
 
 
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct NN { layers: Vec<NNLayer> }
 impl NN {
 	pub fn new_random_from_spec(spec: NNSpec, rng: &mut ThreadRng) -> Self {
@@ -1321,7 +1321,7 @@ impl NN {
 	}
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct NNLayer {
 	weights: DMatrix<f>,
 	biases: DVector<f>,
@@ -1908,6 +1908,20 @@ mod tests {
 		fn to_from_hash_identity() {
 			for af in ActivationFn::get_all_variants() {
 				assert_eq!(af, ActivationFn::from_hash(af.to_hash()));
+			}
+		}
+	}
+
+	mod nn {
+		use super::*;
+		#[test]
+		fn to_from_bytes() {
+			let mut rng = rng();
+			for _ in 0..10 {
+				let inner_layers_sizes = Vec::from_fn(rng.random_range(1..10), |_i| rng.random_range(1. .. 10_f32).powi(2).round() as u32);
+				let nn = NN::new_random(&inner_layers_sizes, &mut rng);
+				// assert_eq!(nn, NN::from_bytes(&nn.to_bytes()));
+				if nn != NN::from_bytes(&nn.to_bytes()) { panic!() }
 			}
 		}
 	}
