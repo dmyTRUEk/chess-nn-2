@@ -11,6 +11,7 @@
 	unused_results,
 	unused_variables,
 	clippy::let_unit_value,
+	clippy::match_overlapping_arm,
 	clippy::unusual_byte_groupings,
 )]
 
@@ -1814,19 +1815,22 @@ impl MyHash_<&[f]> for MyHash {
 			let bits = v.to_bits() as u64;
 			// hash-in value's bits:
 			hash ^= if hash.count_ones() % 2 == 0 { bits } else { bits << 32 };
-			// shuffle bits:
-			hash = match (hash.count_ones() % 2 == 0, hash % 2 == 0) {
-				(true, true) => hash.reverse_bits(),
-				(true, false) => !hash,
-				(false, true) => {
-					let [b0,b1,b2,b3, b4,b5,b6,b7] = hash.to_le_bytes();
-					u64::from_le_bytes([b4,b5,b6,b7, b0,b1,b2,b3])
-				}
-				(false, false) => {
-					let [b0,b1,b2,b3, b4,b5,b6,b7] = hash.to_le_bytes();
-					u64::from_le_bytes([b0,b2,b4,b6, b1,b3,b5,b7])
-				}
-				// another idea: rotate bytes
+			// shuffle bits and bytes:
+			let [b0,b1,b2,b3, b4,b5,b6,b7] = hash.to_le_bytes();
+			const N: u64 = 11;
+			hash = match hash % N {
+				0 => !hash,
+				1 => hash.reverse_bits(),
+				2 => hash.rotate_left(1), // rotate bits
+				3 => u64::from_le_bytes([b7,b6,b5,b4, b3,b2,b1,b0]), // reverse bytes
+				4 => u64::from_le_bytes([b1,b2,b3,b4, b5,b6,b7,b0]), // rotate bytes
+				5 => u64::from_le_bytes([b0,b2,b4,b6, b1,b3,b5,b7]), // 2-braid
+				6 => u64::from_le_bytes([b0,b3,b6, b1,b4,b7, b2,b5]), // 3-braid
+				7 => u64::from_le_bytes([b0,b4, b1,b5, b2,b6, b3,b7]), // 4-braid
+				8 => u64::from_le_bytes([!b0,b1,!b2,b3, !b4,b5,!b6,b7]), // inverse bytes % 2
+				9 => u64::from_le_bytes([!b0,b1,b2,!b3, b4,b5,!b6,b7]), // inverse bytes % 3
+				10 => u64::from_le_bytes([!b0,b1,b2,b3, !b4,b5,b6,b7]), // inverse bytes % 4
+				N.. => unreachable!()
 			}
 		}
 		self.value = hash;
