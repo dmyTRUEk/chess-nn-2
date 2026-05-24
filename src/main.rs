@@ -228,6 +228,7 @@ fn main() {
 			}
 		}
 		let create_nn_from: CreateNNFrom = if load_nn_from_file {
+			// TODO(feat): load multiple NNs (multi nn archs support)
 			let mut nns_files = vec![];
 			for entry in std::fs::read_dir(".").unwrap() {
 				let path = entry.unwrap().path();
@@ -297,6 +298,7 @@ fn main() {
 		}
 	}
 
+	// TODO(feat): remove `inner_layers_sizes` and use parents params for evo/gen (needed for multi nn archs support)
 	let (inner_layers_sizes, nns) = match config.create_nn_from {
 		CreateNNFrom::InnerLayersSizes(inner_layers_sizes) => {
 			(inner_layers_sizes.clone(), Vec::from_fn(config.nns_number as usize, |_i| {
@@ -511,7 +513,7 @@ fn main() {
 			let best_nn = players.iter().find(|p| p.player.is_nn()).unwrap();
 			let Player::NN(best_nn) = &best_nn.player else { unreachable!() };
 			let now = Local::now().format("%Y-%m-%d_%H-%M-%S");
-			let hash = format!("{:016x}", best_nn.calc_hash());
+			let hash = best_nn.calc_hash_to_string();
 			let inner_layers_sizes = best_nn.get_inner_layers_sizes().into_iter().map(|s| s.to_string()).join("_");
 			let filename = format!("{now}__{hash}__{inner_layers_sizes}.{NN_FILE_FORMAT_EXT}");
 			best_nn.save_to_file(&filename);
@@ -1031,7 +1033,7 @@ impl Player {
 	pub fn name(&self) -> String {
 		use Player::*;
 		match self {
-			NN(nn) => format!("NN {:x}", nn.calc_hash()),
+			NN(nn) => format!("NN {}", nn.calc_hash_to_string()),
 			Algo(algo) => algo.get_name(),
 			Human { name } => name.clone(),
 		}
@@ -1182,6 +1184,11 @@ impl NN {
 		for layer in self.layers.iter_mut() {
 			layer.evolve(evolution_rate, rng);
 		}
+	}
+	// TODO(refactor)?: rename?
+	pub fn calc_hash_to_string(&self) -> String {
+		let hash: u64 = self.calc_hash();
+		format!("{:016x}", hash)
 	}
 	pub fn calc_hash(&self) -> u64 {
 		// TODO(refactor): use MyHash
