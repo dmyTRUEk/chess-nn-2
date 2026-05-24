@@ -11,6 +11,7 @@
 	unused_results,
 	unused_variables,
 	clippy::let_unit_value,
+	clippy::unusual_byte_groupings,
 )]
 
 #![allow(
@@ -819,6 +820,7 @@ enum ActivationFn {
 	LeakyReSquare01, // if x<0 => *0.1
 	LeakyReSquare001,
 	Sinc,
+	ReSinc,
 	Softmax,
 	Maxout,
 	// NOTE: dont forget to add new fn to `new_random`
@@ -851,8 +853,8 @@ impl ActivationFn {
 	pub fn new_random(rng: &mut ThreadRng) -> Self {
 		use ActivationFn::*;
 		// assert_eq!(ActivationFn::NUMBER_OF_VARIANTS, VN::NUMBER_OF_VARIANTS);
-		use V24::*;
-		assert_eq!(ActivationFn::get_number_of_variants(), V24::NUMBER_OF_VARIANTS);
+		use V25::*;
+		assert_eq!(ActivationFn::get_number_of_variants(), V25::NUMBER_OF_VARIANTS);
 		match rng.random_variant() {
 			_1 => ReLU,
 			_2 => LeakyReLU_01,
@@ -878,8 +880,9 @@ impl ActivationFn {
 			_20 => LeakyReSquare01,
 			_21 => LeakyReSquare001,
 			_22 => Sinc,
-			_23 => Softmax,
-			_24 => Maxout,
+			_23 => ReSinc,
+			_24 => Softmax,
+			_25 => Maxout,
 		}
 	}
 	pub fn eval(self, xs: DVector<f>) -> DVector<f> {
@@ -909,6 +912,7 @@ impl ActivationFn {
 			LeakyReSquare01 => xs.map(leaky_resquare_01),
 			LeakyReSquare001 => xs.map(leaky_resquare_001),
 			Sinc => xs.map(sinc),
+			ReSinc => xs.map(resinc),
 			Softmax => {
 				if xs.iter().any(|&x| abs(x) > 80. /* ln(f32::MAX) = 88.72284 */) { return Self::Maxout.eval(xs) }
 				let exps = xs.map(exp);
@@ -950,6 +954,7 @@ impl ActivationFn {
 			LeakyReSquare01 => 0x_f84207c5_34b62a65,
 			LeakyReSquare001 => 0x_3299d4f0_b20d7e00,
 			Sinc => 0x_4a2831dc_c744401b,
+			ReSinc => 0x_b5a8b8c5_52e65861,
 			Softmax => 0x_f0fc8c2d_b6a422db,
 			Maxout => 0x_36bc3c93_6f06f7f8,
 		}
@@ -981,6 +986,7 @@ impl ActivationFn {
 			0x_f84207c5_34b62a65 => LeakyReSquare01,
 			0x_3299d4f0_b20d7e00 => LeakyReSquare001,
 			0x_4a2831dc_c744401b => Sinc,
+			0x_b5a8b8c5_52e65861 => ReSinc,
 			0x_f0fc8c2d_b6a422db => Softmax,
 			0x_36bc3c93_6f06f7f8 => Maxout,
 			_ => panic!("unknown activation function, hash: {hash}")

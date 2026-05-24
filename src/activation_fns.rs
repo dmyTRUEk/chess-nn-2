@@ -112,3 +112,7 @@ pub fn sinc(x: f) -> f {
 	}
 }
 
+pub fn resinc(x: f) -> f {
+	if x.is_sign_positive() { sinc(x) } else { 0. }
+}
+
