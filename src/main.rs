@@ -1195,7 +1195,7 @@ impl NN {
 	// TODO(refactor)?: rename?
 	pub fn calc_hash_to_string(&self) -> String {
 		let hash: u64 = self.calc_hash();
-		format!("{:016x}", hash)
+		hash_to_string(hash)
 	}
 	pub fn calc_hash(&self) -> u64 {
 		// TODO(refactor): use MyHash
@@ -1316,7 +1316,7 @@ impl NN {
 		}
 		assert!(bytes.is_empty());
 		let nn = NN { layers };
-		assert_eq!(hash, nn.calc_hash());
+		assert_eq!(hash_to_string(hash), nn.calc_hash_to_string(), "loaded and calculated hashes must match");
 		nn
 	}
 }
@@ -1835,6 +1835,11 @@ impl MyHash_<&[f]> for MyHash {
 		}
 		self.value = hash;
 	}
+}
+
+pub fn hash_to_string(hash: u64) -> String {
+	// TODO(feat)?: use base32 (like nix hash), base64?
+	format!("{:016x}", hash)
 }
 
 
