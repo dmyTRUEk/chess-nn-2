@@ -53,8 +53,11 @@ use utils_io::*;
 mod training_default {
 	use super::*;
 
-	pub const EPOCHS: u32 = 100;
 	pub const NNS_NUMBER: u32 = 30; // it's better be multiple of number of cores/threads on your machine? or else...
+	pub const KEEP_TOP_NNS_FRAC: f = 2.;
+	pub const EPOCHS: u32 = 100;
+	pub const SAVE_EVERY_N_EPOCHS: u32 = 1;
+
 	pub const PLAY_GAME_MOVES_LIMIT: u32 = 200;
 
 	pub const EVOLUTION_RATE_INIT: f = 0.9;
@@ -70,8 +73,6 @@ mod training_default {
 
 	// pub const CHESS_NN_THINK_DEPTH_FOR_TRAINING: u8 = 1;
 	// pub const CHESS_NN_THINK_DEPTH_VS_HUMAN: u8 = 3; // 4 if parallel
-
-	pub const SAVE_EVERY_N_EPOCHS: u32 = 1;
 }
 
 pub const DEFAULT_RATING: f = 1_000.;
@@ -117,8 +118,9 @@ struct Config {
 	task: Task,
 	create_nn_from: CreateNNFrom,
 	nns_number: u32,
+	keep_top_nns_frac: f,
 	epochs: u32,
-	save_every_n_epochs: u32,
+	save_every_n_epochs: Option<u32>,
 	play_game_moves_limit: u32,
 	evolution_rate_init: f,
 	evolution_rate_final: f,
@@ -253,9 +255,10 @@ fn main() {
 			CreateNNFrom::InnerLayersSizes(prompt_inner_layers_sizes())
 		};
 		let nns_number = prompt_with_name_and_default("NNs number", training_default::NNS_NUMBER);
+		let keep_top_nns_frac = prompt_with_name_and_default("Keep top N NNs fraction", training_default::KEEP_TOP_NNS_FRAC);
 		let epochs = prompt_with_name_and_default("Epochs", training_default::EPOCHS);
 		let save_every_n_epochs = prompt_with_name_and_default("Save every N epochs (0 for never)", training_default::SAVE_EVERY_N_EPOCHS);
-		let save_every_n_epochs = if save_every_n_epochs != 0 { save_every_n_epochs } else { u32::MAX };
+		let save_every_n_epochs = (save_every_n_epochs != 0).then_some(save_every_n_epochs);
 		let play_game_moves_limit = prompt_with_name_and_default("Play game moves limit", training_default::PLAY_GAME_MOVES_LIMIT);
 		let evolution_rate_init = prompt_with_name_and_default("Evolution rate init", training_default::EVOLUTION_RATE_INIT);
 		let evolution_rate_final = prompt_with_name_and_default("Evolution rate final", training_default::EVOLUTION_RATE_FINAL);
@@ -267,8 +270,9 @@ fn main() {
 			compute_unit,
 			task,
 			create_nn_from,
-			epochs,
 			nns_number,
+			keep_top_nns_frac,
+			epochs,
 			save_every_n_epochs,
 			play_game_moves_limit,
 			evolution_rate_init,
@@ -444,10 +448,9 @@ fn main() {
 		println!("evolving with evo_rate = {evolution_rate:.4} ...");
 		let players_n = players.len();
 		{ // evolve and natsel: nns
-			const KEEP_TOP_NNS_FRAC: f = 2.3;
 			let index_of_best_nn = players.iter().position(|p| p.player.is_nn()).unwrap();
 			let nns_n = players.iter().filter(|p| p.player.is_nn()).count();
-			let keep_top_n_nns = ((nns_n as f) / KEEP_TOP_NNS_FRAC).round() as usize;
+			let keep_top_n_nns = ((nns_n as f) / config.keep_top_nns_frac).round() as usize;
 			let mut nns_i = 0;
 			for i in 0..players_n {
 				if !players[i].player.is_nn() { continue }
@@ -516,7 +519,7 @@ fn main() {
 
 		assert_eq!(players_n_init, players.len());
 
-		if (epoch+1).is_multiple_of(config.save_every_n_epochs) {
+		if let Some(save_every_n_epochs) = config.save_every_n_epochs && (epoch+1).is_multiple_of(save_every_n_epochs) {
 			// TODO(feat): save not only best NN, best top N NNs
 			let best_nn = players.iter().find(|p| p.player.is_nn()).unwrap();
 			let Player::NN(best_nn) = &best_nn.player else { unreachable!() };
