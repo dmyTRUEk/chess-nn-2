@@ -458,6 +458,7 @@ fn main() {
 						continue // dont evolve
 					} else {
 						players[i] = players[index_of_best_nn].clone();
+						// TODO(feat): mix two nns
 					}
 				}
 				// evolution:
@@ -1754,9 +1755,15 @@ impl AlgoPlayerMix {
 			}
 			*w = w.clamp(0., algo_weights_clamp);
 		}
-		let ws_sum: f = ws.iter().sum();
-		if ws_sum != 0. {
-			ws = ws.map(|v| v / ws_sum);
+		if ws.iter().all(|&w| w == 0.) {
+			// let random_index = rng.random_range(0 .. ws.len());
+			// ws[random_index] = 1.; // TODO?
+			ws = Self::new_random(rng).to_array();
+		} else {
+			let ws_sum: f = ws.iter().sum();
+			if ws_sum != 0. {
+				ws = ws.map(|v| v / ws_sum);
+			}
 		}
 		*self = Self::from_array(ws);
 	}
