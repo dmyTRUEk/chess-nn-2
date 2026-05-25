@@ -128,7 +128,7 @@ struct Config {
 }
 #[derive(Debug)]
 enum CreateNNFrom {
-	File(PathBuf),
+	LoadFile(PathBuf),
 	InnerLayersSizes(Vec<u32>),
 }
 #[derive(Debug)]
@@ -244,7 +244,7 @@ fn main() {
 					println!("{i}. {}", nn_file.file_stem().unwrap().display());
 				}
 				let index_of_nn_to_load = prompt_with_name_and_default("Index of NN to load", nns_files.len()-1);
-				CreateNNFrom::File(nns_files[index_of_nn_to_load].clone())
+				CreateNNFrom::LoadFile(nns_files[index_of_nn_to_load].clone())
 			} else {
 				println!("No `.nn` files found, falling back to creating from NN's inner layers sizes...");
 				CreateNNFrom::InnerLayersSizes(prompt_inner_layers_sizes())
@@ -307,7 +307,7 @@ fn main() {
 				NN::new_random(&inner_layers_sizes, &mut rng)
 			}))
 		}
-		CreateNNFrom::File(filename) => {
+		CreateNNFrom::LoadFile(filename) => {
 			let nn = NN::load_from_file(filename);
 			println!("Loaded NN's hash: {}", nn.calc_hash_to_string());
 			(nn.get_inner_layers_sizes(), Vec::from_fn(config.nns_number as usize, |i| {
