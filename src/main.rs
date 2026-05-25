@@ -797,7 +797,7 @@ impl GameResult_ {
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
 #[repr(u8)]
-enum ActivationFn {
+pub enum ActivationFn {
 	// src: https://en.wikipedia.org/wiki/Activation_function#Table_of_activation_functions
 	ReLU,
 	LeakyReLU_01,
@@ -1199,7 +1199,7 @@ impl NN {
 		let hash: u64 = self.calc_hash();
 		hash_to_string(hash)
 	}
-	pub fn calc_hash(&self) -> u64 {
+	fn calc_hash(&self) -> u64 {
 		// TODO(refactor): use MyHash
 		let mut hash: u64 = 0x_1e88d6f0_b31da73f;
 		for layer in self.layers.iter() {
@@ -1360,7 +1360,7 @@ impl NNLayer {
 			activation_fn: ActivationFn::new_random(rng),
 		}
 	}
-	pub fn calc_hash(&self) -> u64 {
+	fn calc_hash(&self) -> u64 {
 		let mut hash = MyHash::from_seed(0x_c695d51f_e59c7bed);
 		hash.hash(self.biases.as_slice());
 		hash.hash(self.weights.as_slice());
@@ -1688,8 +1688,8 @@ impl AlgoPlayer {
 			PiecesFreedomDiffSTM => "PiecesFreedomDiff StM".to_string(),
 			NegPiecesFreedomDiff => "-PiecesFreedomDiff".to_string(),
 			NegPiecesFreedomDiffSTM => "-PiecesFreedomDiff StM".to_string(),
-			Mix(mix) => format!("Mix {:x} ({})", mix.calc_hash(), mix.to_string()),
-			MixUnderSignedSqrt(mix) => format!("MixUSS {:x} ({})", mix.calc_hash(), mix.to_string()),
+			Mix(mix) => format!("Mix {} ({})", mix.calc_hash_to_string(), mix.to_string()),
+			MixUnderSignedSqrt(mix) => format!("MixUSS {} ({})", mix.calc_hash_to_string(), mix.to_string()),
 		}
 	}
 }
@@ -1768,7 +1768,11 @@ impl AlgoPlayerMix {
 		}
 		*self = Self::from_array(ws);
 	}
-	pub fn calc_hash(&self) -> u64 {
+	pub fn calc_hash_to_string(&self) -> String {
+		let hash: u64 = self.calc_hash();
+		hash_to_string(hash)
+	}
+	fn calc_hash(&self) -> u64 {
 		let mut hash = MyHash::from_seed(0x_7dc29f45_3decba81);
 		hash.hash(self.to_array().as_slice());
 		hash.finish()
