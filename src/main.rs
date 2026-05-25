@@ -309,6 +309,7 @@ fn main() {
 		}
 		CreateNNFrom::File(filename) => {
 			let nn = NN::load_from_file(filename);
+			println!("Loaded NN's hash: {}", nn.calc_hash_to_string());
 			(nn.get_inner_layers_sizes(), Vec::from_fn(config.nns_number as usize, |i| {
 				if i == 0 { nn.clone() } else { nn.clone().evolved(config.evolution_rate_init, &mut rng) }
 			}))
@@ -1845,8 +1846,24 @@ impl MyHash_<&[f]> for MyHash {
 }
 
 pub fn hash_to_string(hash: u64) -> String {
-	// TODO(feat)?: use base32 (like nix hash), base64?
+	// hash_to_string_hex(hash)
+	hash_to_string_base32(hash)
+}
+
+fn hash_to_string_hex(hash: u64) -> String {
 	format!("{:016x}", hash)
+}
+
+fn hash_to_string_base32(mut hash: u64) -> String {
+	const ALPHABET: [char; 32] = ['0','1','2','3','4','5','6','7','8','9',/*'a',*/'b','c','d',/*'e',*/'f','g','h','i','j','k','l','m','n',/*'o',*/'p','q','r','s',/*'t',*/'u','v','w','x','y','z']; // removed 4 most popular letters, src: https://en.wikipedia.org/wiki/Letter_frequency
+	let mut chars = Vec::with_capacity(13); // len = ceil(64/5)
+	while hash > 0 {
+		// TODO?: if hash < 32 => ?
+		chars.push(ALPHABET[(hash % 32) as usize]);
+		hash /= 32;
+	}
+	// chars.reverse(); // TODO?
+	chars.into_iter().join("")
 }
 
 
