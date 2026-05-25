@@ -31,7 +31,7 @@ use chrono::Local;
 use itertools::Itertools;
 use nalgebra::{DMatrix, DVector};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
-use rand::{RngExt, rng, rngs::ThreadRng, seq::SliceRandom};
+use rand::{RngExt, SeedableRng, rng, rngs::StdRng, seq::SliceRandom};
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
 mod activation_fns;
@@ -853,7 +853,7 @@ impl ActivationFn {
 	pub fn get_all_variants() -> Vec<ActivationFn> { // [ActivationFn; NUMBER_OF_VARIANTS]
 		Vec::from_fn(Self::get_number_of_variants() as usize, |i| ActivationFn::try_from(i as u8).unwrap())
 	}
-	pub fn new_random(rng: &mut ThreadRng) -> Self {
+	pub fn new_random(rng: &mut impl RngExt) -> Self {
 		use ActivationFn::*;
 		// assert_eq!(ActivationFn::NUMBER_OF_VARIANTS, VN::NUMBER_OF_VARIANTS);
 		use V25::*;
@@ -1031,7 +1031,7 @@ enum Player {
 	Human { name: String },
 }
 impl Player {
-	pub fn select_move(&self, board: &Board, rng: &mut ThreadRng) -> ChessMove {
+	pub fn select_move(&self, board: &Board, rng: &mut impl RngExt) -> ChessMove {
 		use Player::*;
 		match self {
 			NN(nn) => nn.select_move(board),
@@ -1056,7 +1056,7 @@ impl Player {
 	pub fn is_algo_mix_uss(&self) -> bool {
 		matches!(self, Player::Algo(AlgoPlayer::MixUnderSignedSqrt(_)))
 	}
-	pub fn evolve(&mut self, evolution_rate: f, rng: &mut ThreadRng, algo_weights_clamp: f) {
+	pub fn evolve(&mut self, evolution_rate: f, rng: &mut impl RngExt, algo_weights_clamp: f) {
 		use Player::*;
 		match self {
 			NN(nn) => {
@@ -1104,7 +1104,11 @@ impl NNSpec {
 #[derive(Clone, PartialEq)]
 struct NN { layers: Vec<NNLayer> }
 impl NN {
-	pub fn new_random_from_spec(spec: NNSpec, rng: &mut ThreadRng) -> Self {
+	pub fn new_random_from_spec_with_seed(spec: NNSpec, seed: u64) -> Self {
+		let mut rng = StdRng::seed_from_u64(seed);
+		Self::new_random_from_spec(spec, &mut rng)
+	}
+	pub fn new_random_from_spec(spec: NNSpec, rng: &mut impl RngExt) -> Self {
 		let all_layers_sizes = [&[nn_default::INPUT_SIZE], spec.inner_layers_sizes.as_slice(), &[nn_default::OUTPUT_SIZE]].concat();
 		Self {
 			layers: all_layers_sizes
@@ -1115,7 +1119,11 @@ impl NN {
 				.collect()
 		}
 	}
-	pub fn new_random(inner_layers_sizes: &[u32], rng: &mut ThreadRng) -> Self {
+	pub fn new_random_with_seed(inner_layers_sizes: &[u32], seed: u64) -> Self {
+		let mut rng = StdRng::seed_from_u64(seed);
+		Self::new_random(inner_layers_sizes, &mut rng)
+	}
+	pub fn new_random(inner_layers_sizes: &[u32], rng: &mut impl RngExt) -> Self {
 		let all_layers_sizes = [&[nn_default::INPUT_SIZE], inner_layers_sizes, &[nn_default::OUTPUT_SIZE]].concat();
 		Self {
 			layers: all_layers_sizes
@@ -1185,11 +1193,11 @@ impl NN {
 		debug_assert_eq!(nn_default::OUTPUT_SIZE, v.len() as u32);
 		v[0]
 	}
-	pub fn evolved(mut self, evolution_rate: f, rng: &mut ThreadRng) -> Self {
+	pub fn evolved(mut self, evolution_rate: f, rng: &mut impl RngExt) -> Self {
 		self.evolve(evolution_rate, rng);
 		self
 	}
-	pub fn evolve(&mut self, evolution_rate: f, rng: &mut ThreadRng) {
+	pub fn evolve(&mut self, evolution_rate: f, rng: &mut impl RngExt) {
 		for layer in self.layers.iter_mut() {
 			layer.evolve(evolution_rate, rng);
 		}
@@ -1330,7 +1338,7 @@ struct NNLayer {
 	activation_fn: ActivationFn,
 }
 impl NNLayer {
-	pub fn new_random_from_spec(size_in: u32, size_out: u32, activation_fn: ActivationFn, rng: &mut ThreadRng) -> Self {
+	pub fn new_random_from_spec(size_in: u32, size_out: u32, activation_fn: ActivationFn, rng: &mut impl RngExt) -> Self {
 		// TODO(optim): dont use `random_range` repeatedly, instead create uniform distribution and multi sample it
 		Self {
 			weights: DMatrix::from_fn(
@@ -1345,7 +1353,7 @@ impl NNLayer {
 			activation_fn,
 		}
 	}
-	pub fn new_random(size_in: u32, size_out: u32, rng: &mut ThreadRng) -> Self {
+	pub fn new_random(size_in: u32, size_out: u32, rng: &mut impl RngExt) -> Self {
 		// TODO(optim): dont use `random_range` repeatedly, instead create uniform distribution and multi sample it
 		Self {
 			weights: DMatrix::from_fn(
@@ -1371,7 +1379,7 @@ impl NNLayer {
 		let sums = &self.weights * input + &self.biases;
 		self.activation_fn.eval(sums)
 	}
-	pub fn evolve(&mut self, evolution_rate: f, rng: &mut ThreadRng) {
+	pub fn evolve(&mut self, evolution_rate: f, rng: &mut impl RngExt) {
 		// TODO(optim): generate indices to evolve
 		for bias in self.biases.iter_mut() {
 			if rng.random_bool(evolution_rate as f64) {
@@ -1389,15 +1397,15 @@ impl NNLayer {
 	}
 }
 
-fn evolve_bias(bias: &mut f, rng: &mut ThreadRng) {
+fn evolve_bias(bias: &mut f, rng: &mut impl RngExt) {
 	evolve_value(bias, rng);
 }
 
-fn evolve_weight(weight: &mut f, rng: &mut ThreadRng) {
+fn evolve_weight(weight: &mut f, rng: &mut impl RngExt) {
 	evolve_value(weight, rng);
 }
 
-fn evolve_value(v: &mut f, rng: &mut ThreadRng) {
+fn evolve_value(v: &mut f, rng: &mut impl RngExt) {
 	match_random_weighted! {rng,
 		// */
 		0.01 => { *v *= -1.; },
@@ -1534,13 +1542,13 @@ enum AlgoPlayer {
 	MixUnderSignedSqrt(AlgoPlayerMix),
 }
 impl AlgoPlayer {
-	pub fn mix_new_random(rng: &mut ThreadRng) -> Self {
+	pub fn mix_new_random(rng: &mut impl RngExt) -> Self {
 		Self::Mix(AlgoPlayerMix::new_random(rng))
 	}
-	pub fn mix_uss_new_random(rng: &mut ThreadRng) -> Self {
+	pub fn mix_uss_new_random(rng: &mut impl RngExt) -> Self {
 		Self::MixUnderSignedSqrt(AlgoPlayerMix::new_random(rng))
 	}
-	pub fn select_move(self, board: &Board, rng: &mut ThreadRng) -> ChessMove {
+	pub fn select_move(self, board: &Board, rng: &mut impl RngExt) -> ChessMove {
 		use AlgoPlayer::*;
 		match self {
 			RandomMover => {
@@ -1619,7 +1627,7 @@ impl AlgoPlayer {
 			}
 		}
 	}
-	pub fn eval_board(self, board: &Board, rng: &mut ThreadRng) -> f {
+	pub fn eval_board(self, board: &Board, rng: &mut impl RngExt) -> f {
 		use AlgoPlayer::*;
 		match self {
 			RandomMover => rng.random_range(-50. .. 50.),
@@ -1729,7 +1737,7 @@ impl AlgoPlayerMix {
 		NegPiecesFreedomDiff,
 		NegPiecesFreedomDiffSTM,
 	]};
-	pub fn new_random(rng: &mut ThreadRng) -> Self {
+	pub fn new_random(rng: &mut impl RngExt) -> Self {
 		let ws: [f; Self::N] = std::array::from_fn(|_i| rng.random_range(0. .. 1.));
 		let ws_sum: f = ws.iter().sum();
 		let ws = ws.map(|v| v / ws_sum);
@@ -1744,7 +1752,7 @@ impl AlgoPlayerMix {
 		let Self { random_mover, material_delta, material_delta_stm, neg_material_delta, neg_material_delta_stm, pieces_freedom, pieces_freedom_stm, neg_pieces_freedom, neg_pieces_freedom_stm, pieces_freedom_diff, pieces_freedom_diff_stm, neg_pieces_freedom_diff, neg_pieces_freedom_diff_stm } = *self;
 		[random_mover, material_delta, material_delta_stm, neg_material_delta, neg_material_delta_stm, pieces_freedom, pieces_freedom_stm, neg_pieces_freedom, neg_pieces_freedom_stm, pieces_freedom_diff, pieces_freedom_diff_stm, neg_pieces_freedom_diff, neg_pieces_freedom_diff_stm]
 	}
-	pub fn evolve(&mut self, evolution_rate: f, rng: &mut ThreadRng, algo_weights_clamp: f) {
+	pub fn evolve(&mut self, evolution_rate: f, rng: &mut impl RngExt, algo_weights_clamp: f) {
 		let mut ws = self.to_array();
 		for w in ws.iter_mut() {
 			if rng.random_bool(evolution_rate as f64) {
