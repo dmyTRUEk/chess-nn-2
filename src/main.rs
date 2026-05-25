@@ -53,8 +53,8 @@ use utils_io::*;
 mod training_default {
 	use super::*;
 
-	pub const EPOCHS: u32 = 1000;
-	pub const NNS_NUMBER: u32 = 20; // it's better be multiple of number of cores/threads on your machine? or else...
+	pub const EPOCHS: u32 = 100;
+	pub const NNS_NUMBER: u32 = 30; // it's better be multiple of number of cores/threads on your machine? or else...
 	pub const PLAY_GAME_MOVES_LIMIT: u32 = 200;
 
 	pub const EVOLUTION_RATE_INIT: f = 0.9;
@@ -71,7 +71,7 @@ mod training_default {
 	// pub const CHESS_NN_THINK_DEPTH_FOR_TRAINING: u8 = 1;
 	// pub const CHESS_NN_THINK_DEPTH_VS_HUMAN: u8 = 3; // 4 if parallel
 
-	pub const SAVE_EVERY_N_EPOCHS: u32 = 10;
+	pub const SAVE_EVERY_N_EPOCHS: u32 = 1;
 }
 
 pub const DEFAULT_RATING: f = 1_000.;
