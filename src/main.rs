@@ -310,6 +310,7 @@ fn main() {
 		CreateNNFrom::LoadFile(filename) => {
 			let nn = NN::load_from_file(filename);
 			println!("Loaded NN's hash: {}", nn.calc_hash_to_string());
+			// TODO: why slow?
 			(nn.get_inner_layers_sizes(), Vec::from_fn(config.nns_number as usize, |i| {
 				if i == 0 { nn.clone() } else { nn.clone().evolved(config.evolution_rate_init, &mut rng) }
 			}))
@@ -350,6 +351,7 @@ fn main() {
 			config.play_game_moves_limit,
 			UpdateRatingsParams { win_by_points_k: config.win_by_points_k, draw_by_points_k: config.draw_by_points_k },
 			config.compute_unit,
+			&mut rng,
 		);
 
 		println!();
@@ -369,6 +371,7 @@ fn main() {
 
 		println!();
 
+		// TODO?: remove not NN games
 		{ // best vs self
 			let white = &players[0].player;
 			let black = white;
@@ -514,6 +517,7 @@ fn main() {
 		assert_eq!(players_n_init, players.len());
 
 		if (epoch+1).is_multiple_of(config.save_every_n_epochs) {
+			// TODO(feat): save not only best NN, best top N NNs
 			let best_nn = players.iter().find(|p| p.player.is_nn()).unwrap();
 			let Player::NN(best_nn) = &best_nn.player else { unreachable!() };
 			let now = Local::now().format("%Y-%m-%d_%H-%M-%S");
@@ -521,6 +525,7 @@ fn main() {
 			let inner_layers_sizes = best_nn.get_inner_layers_sizes().into_iter().map(|s| s.to_string()).join("_");
 			let filename = format!("{now}__{hash}__{inner_layers_sizes}.{NN_FILE_FORMAT_EXT}");
 			best_nn.save_to_file(&filename);
+			// TODO(feat): print "saved" or something
 		}
 
 		println!();
@@ -546,23 +551,32 @@ fn play_tournament(
 	move_limit: u32,
 	update_ratings_params: UpdateRatingsParams,
 	compute_unit: ComputeUnit,
+	rng: &mut impl RngExt,
 ) {
 	let players_n = players.len();
 	match compute_unit {
 		ComputeUnit::CpuOne => {
+			let mut games: Vec<(usize, usize, GameResult_)> = vec![];
 			print("games results: ");
 			for white_i in 0..players_n {
 				for black_i in 0..players_n {
 					if white_i == black_i { continue }
 					let [white, black] = players.get_disjoint_mut([white_i, black_i]).unwrap();
 					let (game_result, _) = play_game(&white.player, &black.player, move_limit, false);
-					update_stats(&mut white.stats, &mut black.stats, game_result);
-					update_ratings(&mut white.rating, &mut black.rating, game_result, update_ratings_params);
 					print(game_result.to_char());
+					games.push((white_i, black_i, game_result));
 				}
 				print(" ");
 			}
 			println!();
+			// TODO(refactor): extract?
+			games.shuffle(rng);
+			for (white_i, black_i, game_result) in games.into_iter() {
+				if white_i == black_i { unreachable!() }
+				let [white, black] = players.get_disjoint_mut([white_i, black_i]).unwrap();
+				update_stats(&mut white.stats, &mut black.stats, game_result);
+				update_ratings(&mut white.rating, &mut black.rating, game_result, update_ratings_params);
+			}
 		}
 		ComputeUnit::CpuN(_) | ComputeUnit::CpuAll => {
 			let players_ref: &[PlayerWithRatingAndStats] = &*players; // this fixes bc `&mut T` is not Copy (need for move), but `&T` is Copy (src: chatgpt)
@@ -577,21 +591,26 @@ fn play_tournament(
 				})
 				.flatten() // remove `None`s // TODO?: dont flatten, and when printing print `_` or something
 				.collect();
-			games.sort_unstable_by_key(|g| (g.0, g.1));
+			games.sort_unstable_by_key(|g| (g.0, g.1)); // TODO: recheck
 			println!();
 			println!();
 			print!("organized: ");
-			for (i, (white_i, black_i, game_result)) in games.into_iter().enumerate() {
-				// println!("{white_i}, {black_i}, {game_result:?}");
+			for (i, (white_i, black_i, game_result)) in games.iter().enumerate() {
 				if white_i == black_i { unreachable!() }
-				let [white, black] = players.get_disjoint_mut([white_i, black_i]).unwrap();
-				update_stats(&mut white.stats, &mut black.stats, game_result);
-				update_ratings(&mut white.rating, &mut black.rating, game_result, update_ratings_params);
+				// println!("{white_i}, {black_i}, {game_result:?}");
 				print!("{}", game_result.to_char());
 				// println!("CHAR: {}", game_result.to_char());
 				if i % (players_n - 1) == players_n - 2 { print(" "); }
 			}
 			println!();
+			// TODO(refactor): extract?
+			games.shuffle(rng);
+			for (white_i, black_i, game_result) in games.into_iter() {
+				if white_i == black_i { unreachable!() }
+				let [white, black] = players.get_disjoint_mut([white_i, black_i]).unwrap();
+				update_stats(&mut white.stats, &mut black.stats, game_result);
+				update_ratings(&mut white.rating, &mut black.rating, game_result, update_ratings_params);
+			}
 		}
 		ComputeUnit::Gpu => {
 			todo!("use same as CpuOne?")
@@ -1027,6 +1046,7 @@ impl NumberOfDepthChannels {
 #[repr(u8)]
 enum Player {
 	NN(NN),
+	// NNFromSeed { seed: u64 }, // TODO
 	Algo(AlgoPlayer),
 	Human { name: String },
 }
@@ -1075,7 +1095,12 @@ impl Player {
 }
 
 #[derive(Clone)]
-struct PlayerWithRatingAndStats { player: Player, rating: f, stats: PlayerInTournamentStats }
+struct PlayerWithRatingAndStats {
+	player: Player,
+	rating: f,
+	stats: PlayerInTournamentStats,
+	// TODO(feat): add global number of wins in tournaments
+}
 impl PlayerWithRatingAndStats {
 	pub fn new(player: Player) -> PlayerWithRatingAndStats {
 		Self { player, rating: DEFAULT_RATING, stats: PlayerInTournamentStats::new() }
