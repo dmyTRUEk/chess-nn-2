@@ -1897,7 +1897,7 @@ fn hash_to_string_hex(hash: u64) -> String {
 }
 
 fn hash_to_string_base32(mut hash: u64) -> String {
-	const ALPHABET: [char; 32] = ['0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f','g','h','i',/*'j',*/'k','l','m','n','o','p',/*'q',*/'r','s','t','u','v','w',/*'x',*/'y',/*'z',*/]; // removed 4 least popular letters, src: https://en.wikipedia.org/wiki/Letter_frequency // TODO?: change
+	const ALPHABET: [char; 32] = ['0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f','g','h','i','j','k',/*'l',*/'m','n','o','p',/*'q',*/'r',/*'s',*/'t','u','v','w','x','y',/*'z',*/]; // removed 4 most confusable letters
 	const N: usize = 13; // len = ceil(64/5)
 	let mut chars = Vec::with_capacity(N);
 	for _ in 0..13 {
@@ -1999,7 +1999,7 @@ mod tests {
 		use super::*;
 		#[test] fn _0x_0000_0000_0000_0000() { assert_eq!("0000000000000", hash_to_string_base32(0x_0000_0000_0000_0000)); }
 		#[test] fn _0x_0000_0000_0000_0145() { assert_eq!("5a00000000000", hash_to_string_base32(0x_0000_0000_0000_0145)); }
-		#[test] fn _0x_1370_0000_0000_0000() { assert_eq!("0000000000u61", hash_to_string_base32(0x_1370_0000_0000_0000)); }
+		#[test] fn _0x_1370_0000_0000_0000() { assert_eq!("0000000000v61", hash_to_string_base32(0x_1370_0000_0000_0000)); }
 	}
 }
 
