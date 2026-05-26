@@ -101,8 +101,8 @@ mod nn_default {
 
 	pub const W_MIN: f = -1.;
 	pub const W_MAX: f =  1.;
-	pub const S_MIN: f = -10.;
-	pub const S_MAX: f =  10.;
+	// pub const S_MIN: f = -10.;
+	// pub const S_MAX: f =  10.;
 }
 
 pub const NN_FILE_FORMAT_EXT: &str = "nn";
@@ -1210,6 +1210,7 @@ impl ActivationFn {
 
 
 // TODO(refactor): make more variants
+#[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 enum NumberOfDepthChannels {
 	Two,
@@ -1347,25 +1348,6 @@ impl NNSpec {
 #[derive(Clone, PartialEq)]
 struct NN { layers: Vec<NNLayer> }
 impl NN {
-	pub fn new_random_from_spec_with_seed(spec: NNSpec, seed: u64) -> Self {
-		let mut rng = StdRng::seed_from_u64(seed);
-		Self::new_random_from_spec(spec, &mut rng)
-	}
-	pub fn new_random_from_spec(spec: NNSpec, rng: &mut impl RngExt) -> Self {
-		let all_layers_sizes = [&[nn_default::INPUT_SIZE], spec.inner_layers_sizes.as_slice(), &[nn_default::OUTPUT_SIZE]].concat();
-		Self {
-			layers: all_layers_sizes
-				.array_windows()
-				.cloned()
-				.zip_eq(spec.activation_fns)
-				.map(|([size_in, size_out], af)| NNLayer::new_random_from_spec(size_in, size_out, af, rng))
-				.collect()
-		}
-	}
-	pub fn new_random_with_seed(inner_layers_sizes: &[u32], seed: u64) -> Self {
-		let mut rng = StdRng::seed_from_u64(seed);
-		Self::new_random(inner_layers_sizes, &mut rng)
-	}
 	pub fn new_random(inner_layers_sizes: &[u32], rng: &mut impl RngExt) -> Self {
 		let all_layers_sizes = [&[nn_default::INPUT_SIZE], inner_layers_sizes, &[nn_default::OUTPUT_SIZE]].concat();
 		Self {
@@ -1376,6 +1358,25 @@ impl NN {
 				.collect()
 		}
 	}
+	// pub fn new_random_with_seed(inner_layers_sizes: &[u32], seed: u64) -> Self {
+	// 	let mut rng = StdRng::seed_from_u64(seed);
+	// 	Self::new_random(inner_layers_sizes, &mut rng)
+	// }
+	// pub fn new_random_from_spec_with_seed(spec: NNSpec, seed: u64) -> Self {
+	// 	let mut rng = StdRng::seed_from_u64(seed);
+	// 	Self::new_random_from_spec(spec, &mut rng)
+	// }
+	// pub fn new_random_from_spec(spec: NNSpec, rng: &mut impl RngExt) -> Self {
+	// 	let all_layers_sizes = [&[nn_default::INPUT_SIZE], spec.inner_layers_sizes.as_slice(), &[nn_default::OUTPUT_SIZE]].concat();
+	// 	Self {
+	// 		layers: all_layers_sizes
+	// 			.array_windows()
+	// 			.cloned()
+	// 			.zip_eq(spec.activation_fns)
+	// 			.map(|([size_in, size_out], af)| NNLayer::new_random_from_spec(size_in, size_out, af, rng))
+	// 			.collect()
+	// 	}
+	// }
 	fn eval_board(&self, board: &Board) -> f {
 		let nn_input = board_to_vector_for_nn(board);
 		let nn_output = self.eval_input(nn_input);
@@ -1586,21 +1587,6 @@ struct NNLayer {
 	activation_fn: ActivationFn,
 }
 impl NNLayer {
-	pub fn new_random_from_spec(size_in: u32, size_out: u32, activation_fn: ActivationFn, rng: &mut impl RngExt) -> Self {
-		// TODO(optim): dont use `random_range` repeatedly, instead create uniform distribution and multi sample it
-		Self {
-			weights: DMatrix::from_fn(
-				size_out as usize,
-				size_in as usize,
-				|_i, _j| rng.random_range(nn_default::W_MIN .. nn_default::W_MAX)
-			),
-			biases: DVector::from_fn(
-				size_out as usize,
-				|_i, _| rng.random_range(nn_default::S_MIN .. nn_default::S_MAX) // TODO?: `S_MAX` dependant on `size_out`
-			),
-			activation_fn,
-		}
-	}
 	pub fn new_random(size_in: u32, size_out: u32, rng: &mut impl RngExt) -> Self {
 		// TODO(optim): dont use `random_range` repeatedly, instead create uniform distribution and multi sample it
 		Self {
@@ -1611,11 +1597,34 @@ impl NNLayer {
 			),
 			biases: DVector::from_fn(
 				size_out as usize,
-				|_i, _| rng.random_range(nn_default::S_MIN .. nn_default::S_MAX) // TODO?: `S_MAX` dependant on `size_out`
+				|_i, _| {
+					let range = match_random_weighted! {rng,
+						1. => size_in as f,
+						1. => size_out as f,
+						1. => ((size_in as f) + (size_out as f)) / 2.,
+						1. => sqrt((size_in as f) * (size_out as f)),
+					};
+					rng.random_range(-range .. range)
+				}
 			),
 			activation_fn: ActivationFn::new_random(rng),
 		}
 	}
+	// pub fn new_random_from_spec(size_in: u32, size_out: u32, activation_fn: ActivationFn, rng: &mut impl RngExt) -> Self {
+	// 	// TODO(optim): dont use `random_range` repeatedly, instead create uniform distribution and multi sample it
+	// 	Self {
+	// 		weights: DMatrix::from_fn(
+	// 			size_out as usize,
+	// 			size_in as usize,
+	// 			|_i, _j| rng.random_range(nn_default::W_MIN .. nn_default::W_MAX)
+	// 		),
+	// 		biases: DVector::from_fn(
+	// 			size_out as usize,
+	// 			|_i, _| todo!()
+	// 		),
+	// 		activation_fn,
+	// 	}
+	// }
 	fn calc_hash(&self) -> u64 {
 		let mut hash = MyHash::from_seed(0x_c695d51f_e59c7bed);
 		hash.hash(self.biases.as_slice());
@@ -1639,7 +1648,7 @@ impl NNLayer {
 				evolve_weight(weight, rng);
 			}
 		}
-		if rng.random_bool((evolution_rate/10.) as f64) {
+		if rng.random_bool((evolution_rate/3.) as f64) {
 			self.activation_fn = ActivationFn::new_random(rng);
 		}
 	}
@@ -1656,7 +1665,7 @@ fn evolve_weight(weight: &mut f, rng: &mut impl RngExt) {
 fn evolve_value(v: &mut f, rng: &mut impl RngExt) {
 	match_random_weighted! {rng,
 		// */
-		0.01 => { *v *= -1.; },
+		0.001 => { *v *= -1.; },
 		1. => { *v *= 2.; },
 		1. => { *v /= 2.; },
 		2. => { *v *= 1.4; },
@@ -1679,8 +1688,8 @@ fn evolve_value(v: &mut f, rng: &mut impl RngExt) {
 		// +- sqrt
 		0.001 => { *v += sqrt(abs(*v)); },
 		0.001 => { *v -= sqrt(abs(*v)); },
-		0.001 => { *v += sqrt(1. / abs(*v)); },
-		0.001 => { *v -= sqrt(1. / abs(*v)); },
+		// 0.001 => { *v += sqrt(1. / abs(*v)); },
+		// 0.001 => { *v -= sqrt(1. / abs(*v)); },
 		// +- ln
 		// 0.0001 => { *v += sqrt(ln(*v)); },
 		// 0.0001 => { *v -= sqrt(ln(*v)); },
