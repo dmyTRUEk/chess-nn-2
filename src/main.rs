@@ -24,7 +24,7 @@
 	clippy::upper_case_acronyms,
 )]
 
-use std::{cmp::Ordering, path::{Path, PathBuf}, time::Instant};
+use std::{cmp::Ordering, path::{Path, PathBuf}, str::FromStr, time::Instant};
 
 use chess::{ALL_SQUARES, Action, Board, BoardBuilder, ChessMove, Color, Game, GameResult, MoveGen, Piece};
 use chrono::Local;
@@ -140,15 +140,6 @@ enum CreateNNFrom {
 	InnerLayersSizes(Vec<u32>),
 }
 
-// struct ConfigInspect {}
-
-#[derive(Debug)]
-struct ConfigPlay {
-	compute_unit: ComputeUnit,
-	create_nn_from: CreateNNFrom,
-	play_game_moves_limit: u32,
-	algo_weights_clamp: f,
-}
 
 
 
@@ -236,6 +227,7 @@ fn main() {
 			// 		_ => continue
 			// 	}
 			// };
+			// TODO(refactor): f2f6ee
 			let mut nns_files = load_nns_files();
 			if nns_files.is_empty() { unimplemented!() }
 			nns_files.sort();
@@ -255,7 +247,141 @@ fn main() {
 			return
 		}
 		Task::Play => {
-			todo!();
+			let human_name: String = prompt_with_name_and_default("Your name", "human".to_string());
+			let player_human = Player::Human { name: human_name };
+
+			enum PlayAgainst { NN, Algo }
+			let play_against: PlayAgainst = loop {
+				break match prompt_with_name_and_default("Play against (NN, Algo)", "nn".to_string()).as_str() {
+					"n" | "nn" => PlayAgainst::NN,
+					"a" | "algo" => PlayAgainst::Algo,
+					_ => continue
+				}
+			};
+			let player_bot: Player = match play_against {
+				PlayAgainst::NN => {
+					// TODO(refactor): f2f6ee
+					let mut nns_files = load_nns_files();
+					if nns_files.is_empty() { unimplemented!() }
+					nns_files.sort();
+					for (i, nn_file) in nns_files.iter().enumerate() {
+						println!("{i}. {}", nn_file.file_stem().unwrap().display());
+					}
+					let index_of_nn_to_load = prompt_with_name_and_default("Index of NN to load", nns_files.len()-1);
+					let filename = &nns_files[index_of_nn_to_load];
+					let nn = NN::load_from_file(filename);
+					println!();
+					println!("Loaded NN's hash: {}", nn.calc_hash_to_string());
+					println!();
+					Player::NN(nn)
+				}
+				PlayAgainst::Algo => {
+					#[derive(Debug, TryFromPrimitive)]
+					#[repr(u8)]
+					enum Algo {
+						RandomMover,
+						MiddleMover,
+						MaterialDelta,
+						MaterialDeltaSTM,
+						NegMaterialDelta,
+						NegMaterialDeltaSTM,
+						PiecesFreedom,
+						PiecesFreedomSTM,
+						NegPiecesFreedom,
+						NegPiecesFreedomSTM,
+						PiecesFreedomDiff,
+						PiecesFreedomDiffSTM,
+						NegPiecesFreedomDiff,
+						NegPiecesFreedomDiffSTM,
+						Mix,
+						MixUnderSignedSqrt,
+					}
+					let mut algos_n = 0;
+					while Algo::try_from_primitive(algos_n).is_ok() {
+						algos_n += 1;
+					}
+					assert_eq!(16, algos_n);
+					for i in 0..algos_n {
+						let algo = Algo::try_from_primitive(i).unwrap();
+						println!("{i}. {algo:?}");
+					}
+					println!();
+					let algo: Algo = loop {
+						break match prompt_str("Algo Number: ") {
+							n if let Ok(n) = n.parse() && n < algos_n => Algo::try_from_primitive(n).unwrap(),
+							_ => continue
+						}
+					};
+					println!();
+					let algo_player: AlgoPlayer = match algo {
+						Algo::RandomMover => AlgoPlayer::RandomMover,
+						Algo::MiddleMover => AlgoPlayer::MiddleMover,
+						Algo::MaterialDelta => AlgoPlayer::MaterialDelta,
+						Algo::MaterialDeltaSTM => AlgoPlayer::MaterialDeltaSTM,
+						Algo::NegMaterialDelta => AlgoPlayer::NegMaterialDelta,
+						Algo::NegMaterialDeltaSTM => AlgoPlayer::NegMaterialDeltaSTM,
+						Algo::PiecesFreedom => AlgoPlayer::PiecesFreedom,
+						Algo::PiecesFreedomSTM => AlgoPlayer::PiecesFreedomSTM,
+						Algo::NegPiecesFreedom => AlgoPlayer::NegPiecesFreedom,
+						Algo::NegPiecesFreedomSTM => AlgoPlayer::NegPiecesFreedomSTM,
+						Algo::PiecesFreedomDiff => AlgoPlayer::PiecesFreedomDiff,
+						Algo::PiecesFreedomDiffSTM => AlgoPlayer::PiecesFreedomDiffSTM,
+						Algo::NegPiecesFreedomDiff => AlgoPlayer::NegPiecesFreedomDiff,
+						Algo::NegPiecesFreedomDiffSTM => AlgoPlayer::NegPiecesFreedomDiffSTM,
+						Algo::Mix | Algo::MixUnderSignedSqrt => {
+							println!("Info: StM := score * side_to_move (1 or -1)");
+							println!();
+							let random_mover = prompt_with_name_and_default("Random Mover", 0.);
+							let material_delta = prompt_with_name_and_default("Material Delta", 0.);
+							let material_delta_stm = prompt_with_name_and_default("Material Delta StM", 0.);
+							let neg_material_delta = prompt_with_name_and_default("Neg Material Delta", 0.);
+							let neg_material_delta_stm = prompt_with_name_and_default("Neg Material Delta StM", 0.);
+							let pieces_freedom = prompt_with_name_and_default("Pieces Freedom", 0.);
+							let pieces_freedom_stm = prompt_with_name_and_default("Pieces Freedom StM", 0.);
+							let neg_pieces_freedom = prompt_with_name_and_default("Neg Pieces Freedom", 0.);
+							let neg_pieces_freedom_stm = prompt_with_name_and_default("Neg Pieces Freedom StM", 0.);
+							let pieces_freedom_diff = prompt_with_name_and_default("Pieces Freedom Diff", 0.);
+							let pieces_freedom_diff_stm = prompt_with_name_and_default("Pieces Freedom Diff StM", 0.);
+							let neg_pieces_freedom_diff = prompt_with_name_and_default("Neg Pieces Freedom Diff", 0.);
+							let neg_pieces_freedom_diff_stm = prompt_with_name_and_default("Neg Pieces Freedom Diff StM", 0.);
+							println!();
+							let algo_player_mix = AlgoPlayerMix { random_mover, material_delta, material_delta_stm, neg_material_delta, neg_material_delta_stm, pieces_freedom, pieces_freedom_stm, neg_pieces_freedom, neg_pieces_freedom_stm, pieces_freedom_diff, pieces_freedom_diff_stm, neg_pieces_freedom_diff, neg_pieces_freedom_diff_stm };
+							match algo {
+								Algo::Mix => AlgoPlayer::Mix(algo_player_mix),
+								Algo::MixUnderSignedSqrt => AlgoPlayer::MixUnderSignedSqrt(algo_player_mix),
+								_ => unreachable!()
+							}
+						}
+					};
+					Player::Algo(algo_player)
+				}
+			};
+
+			// let think_depth: u32 = prompt_with_name_and_default("Think Depth", 1);
+
+			let side_to_play: Color = loop {
+				break match prompt_with_name_and_default("Side to play (White/Black)", "white".to_string()).as_str() {
+					"w" | "white" => Color::White,
+					"b" | "black" => Color::Black,
+					_ => continue
+				}
+			};
+			let (player_white, player_black) = match side_to_play {
+				Color::White => (player_human, player_bot),
+				Color::Black => (player_bot, player_human),
+			};
+
+			let moves_limit = prompt_with_name_and_default("Play game moves limit", training_default::PLAY_GAME_MOVES_LIMIT);
+
+			let (game_result, Some(game)) = play_game(&player_white, &player_black, PlayGameParams {
+				moves_limit,
+				get_game: true,
+			}) else { unreachable!() };
+
+			println!("Game Result: {game_result:?}");
+			println!();
+			println!("moves: {}", game.to_uci());
+			println!();
 			return
 		}
 	}
@@ -288,6 +414,7 @@ fn main() {
 		}
 		let create_nn_from: CreateNNFrom = if load_nn_from_file {
 			// TODO(feat): load multiple NNs (multi nn archs support)
+			// TODO(refactor): f2f6ee
 			let mut nns_files = load_nns_files();
 			if !nns_files.is_empty() {
 				nns_files.sort();
@@ -388,13 +515,11 @@ fn main() {
 
 		players.shuffle(&mut rng);
 
-		play_tournament(
-			&mut players,
-			config.play_game_moves_limit,
-			UpdateRatingsParams { win_by_points_k: config.win_by_points_k, draw_by_points_k: config.draw_by_points_k },
-			config.compute_unit,
-			&mut rng,
-		);
+		play_tournament(&mut players, &mut rng, TournamentParams {
+			moves_limit: config.play_game_moves_limit,
+			update_ratings_params: UpdateRatingsParams { win_by_points_k: config.win_by_points_k, draw_by_points_k: config.draw_by_points_k },
+			compute_unit: config.compute_unit,
+		});
 
 		println!();
 
@@ -413,64 +538,48 @@ fn main() {
 
 		println!();
 
-		// TODO?: remove not NN games
-		{ // best vs self
-			let white = &players[0].player;
-			let black = white;
-			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
-			println!("best vs self ({}):   {}", game_result.to_char(), game.to_uci());
-		}
-		println!();
-		{ // best vs second
-			let white = &players[0].player;
-			let black = &players[1].player;
-			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
-			println!("best vs second ({}):   {}", game_result.to_char(), game.to_uci());
-		}
-		println!();
-		{ // best vs worst
-			let white = &players[0].player;
-			let black = &players[players.len()-1].player;
-			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
-			println!("best vs worst ({}):   {}", game_result.to_char(), game.to_uci());
-		}
-		println!();
-		{ // best NN vs best
-			let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
-			let black = &players[0].player;
-			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
-			println!("best NN vs best ({}):   {}", game_result.to_char(), game.to_uci());
-		}
-		println!();
-		{ // best NN vs self
-			let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
-			let black = white;
-			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
-			println!("best NN vs self ({}):   {}", game_result.to_char(), game.to_uci());
-		}
-		println!();
-		{ // best NN vs second best NN
-			let [white, black] = players.iter()
-				.filter(|p| p.player.is_nn())
-				.k_largest_by(2, |p1, p2| p1.rating.partial_cmp(&p2.rating).unwrap())
-				.map(|p| &p.player)
-				.collect::<Vec<_>>()[..] else { unreachable!() };
-			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
-			println!("best NN vs second best NN ({}):   {}", game_result.to_char(), game.to_uci());
-		}
-		println!();
-		{ // best NN vs worst NN
-			let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
-			let black = &players.iter().rev().find(|p| p.player.is_nn()).unwrap().player;
-			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
-			println!("best NN vs worst NN ({}):   {}", game_result.to_char(), game.to_uci());
-		}
-		println!();
-		{ // best NN vs worst
-			let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
-			let black = &players[players.len()-1].player;
-			let (game_result, Some(game)) = play_game(white, black, config.play_game_moves_limit, true) else { unreachable!() };
-			println!("best NN vs worst ({}):   {}", game_result.to_char(), game.to_uci());
+		{
+			let play_game_params = PlayGameParams {
+				moves_limit: config.play_game_moves_limit,
+				get_game: true,
+			};
+			{ // best NN vs best
+				let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
+				let black = &players[0].player;
+				let (game_result, Some(game)) = play_game(white, black, play_game_params) else { unreachable!() };
+				println!("best NN vs best ({}):   {}", game_result.to_char(), game.to_uci());
+			}
+			println!();
+			{ // best NN vs self
+				let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
+				let black = white;
+				let (game_result, Some(game)) = play_game(white, black, play_game_params) else { unreachable!() };
+				println!("best NN vs self ({}):   {}", game_result.to_char(), game.to_uci());
+			}
+			println!();
+			{ // best NN vs second best NN
+				let [white, black] = players.iter()
+					.filter(|p| p.player.is_nn())
+					.k_largest_by(2, |p1, p2| p1.rating.partial_cmp(&p2.rating).unwrap())
+					.map(|p| &p.player)
+					.collect::<Vec<_>>()[..] else { unreachable!() };
+				let (game_result, Some(game)) = play_game(white, black, play_game_params) else { unreachable!() };
+				println!("best NN vs second best NN ({}):   {}", game_result.to_char(), game.to_uci());
+			}
+			println!();
+			{ // best NN vs worst NN
+				let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
+				let black = &players.iter().rev().find(|p| p.player.is_nn()).unwrap().player;
+				let (game_result, Some(game)) = play_game(white, black, play_game_params) else { unreachable!() };
+				println!("best NN vs worst NN ({}):   {}", game_result.to_char(), game.to_uci());
+			}
+			println!();
+			{ // best NN vs worst
+				let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
+				let black = &players[players.len()-1].player;
+				let (game_result, Some(game)) = play_game(white, black, play_game_params) else { unreachable!() };
+				println!("best NN vs worst ({}):   {}", game_result.to_char(), game.to_uci());
+			}
 		}
 
 		println!();
@@ -585,17 +694,24 @@ fn main() {
 
 
 
-
+#[derive(Debug, Clone, Copy)]
+struct TournamentParams {
+	moves_limit: u32,
+	update_ratings_params: UpdateRatingsParams,
+	compute_unit: ComputeUnit,
+}
 
 fn play_tournament(
 	players: &mut [PlayerWithRatingAndStats],
-	move_limit: u32,
-	update_ratings_params: UpdateRatingsParams,
-	compute_unit: ComputeUnit,
 	rng: &mut impl RngExt,
+	params: TournamentParams,
 ) {
 	let players_n = players.len();
-	match compute_unit {
+	let play_game_params = PlayGameParams {
+		moves_limit: params.moves_limit,
+		get_game: false,
+	};
+	match params.compute_unit {
 		ComputeUnit::CpuOne => {
 			let mut games: Vec<(usize, usize, GameResult_)> = vec![];
 			print("games results: ");
@@ -603,7 +719,7 @@ fn play_tournament(
 				for black_i in 0..players_n {
 					if white_i == black_i { continue }
 					let [white, black] = players.get_disjoint_mut([white_i, black_i]).unwrap();
-					let (game_result, _) = play_game(&white.player, &black.player, move_limit, false);
+					let (game_result, _) = play_game(&white.player, &black.player, play_game_params);
 					print(game_result.to_char());
 					games.push((white_i, black_i, game_result));
 				}
@@ -616,7 +732,7 @@ fn play_tournament(
 				if white_i == black_i { unreachable!() }
 				let [white, black] = players.get_disjoint_mut([white_i, black_i]).unwrap();
 				update_stats(&mut white.stats, &mut black.stats, game_result);
-				update_ratings(&mut white.rating, &mut black.rating, game_result, update_ratings_params);
+				update_ratings(&mut white.rating, &mut black.rating, game_result, params.update_ratings_params);
 			}
 		}
 		ComputeUnit::CpuN(_) | ComputeUnit::CpuAll => {
@@ -626,7 +742,7 @@ fn play_tournament(
 				.par_bridge()
 				.map(|(white_i, black_i)| {
 					if white_i == black_i { return None }
-					let (game_result, _) = play_game(&players_ref[white_i].player, &players_ref[black_i].player, move_limit, false);
+					let (game_result, _) = play_game(&players_ref[white_i].player, &players_ref[black_i].player, play_game_params);
 					print(game_result.to_char());
 					Some((white_i, black_i, game_result))
 				})
@@ -650,7 +766,7 @@ fn play_tournament(
 				if white_i == black_i { unreachable!() }
 				let [white, black] = players.get_disjoint_mut([white_i, black_i]).unwrap();
 				update_stats(&mut white.stats, &mut black.stats, game_result);
-				update_ratings(&mut white.rating, &mut black.rating, game_result, update_ratings_params);
+				update_ratings(&mut white.rating, &mut black.rating, game_result, params.update_ratings_params);
 			}
 		}
 		ComputeUnit::Gpu => {
@@ -659,8 +775,14 @@ fn play_tournament(
 	}
 }
 
+
+
 #[derive(Debug, Clone, Copy)]
-struct UpdateRatingsParams { win_by_points_k: f, draw_by_points_k: f }
+struct UpdateRatingsParams {
+	win_by_points_k: f,
+	draw_by_points_k: f,
+}
+
 fn update_ratings(
 	white: &mut f,
 	black: &mut f,
@@ -736,11 +858,20 @@ impl PlayerInTournamentStats {
 	fn new() -> Self { Self { wins: 0, loses: 0, wins_by_points: 0, loses_by_points: 0, draws_by_points: 0 } }
 }
 
-fn play_game(white: &Player, black: &Player, move_limit: u32, get_game: bool) -> (GameResult_, Option<Game>) {
+
+
+#[derive(Debug, Clone, Copy)]
+struct PlayGameParams {
+	moves_limit: u32,
+	// print_players_moves_scores: bool, // TODO
+	get_game: bool,
+}
+
+fn play_game(white: &Player, black: &Player, params: PlayGameParams) -> (GameResult_, Option<Game>) {
 	let mut rng = rng();
 	let mut game = Game::new(); // TODO!(optim): dont use Game, use Board directly
 	let mut move_number: u32 = 0;
-	while game.result().is_none() && move_number < move_limit {
+	while game.result().is_none() && move_number < params.moves_limit {
 		move_number += 1;
 		let board = game.current_position();
 		let side_to_move: Color = board.side_to_move();
@@ -773,7 +904,7 @@ fn play_game(white: &Player, black: &Player, move_limit: u32, get_game: bool) ->
 			Ordering::Greater => GameResult_::WhiteWinsByPoints,
 		}
 	};
-	(gr, get_game.then_some(game))
+	(gr, params.get_game.then_some(game))
 }
 
 pub trait BoardCountMaterialDelta { fn count_material_delta(self) -> f; }
@@ -1097,7 +1228,23 @@ impl Player {
 		match self {
 			NN(nn) => nn.select_move(board),
 			Algo(algo) => algo.select_move(board, rng),
-			Human { name: _ } => todo!(),
+			Human { name } => {
+				println!();
+				println!("{}", board_to_human_viewable(board, BoardToHumanViewableConfig::all()));
+				println!();
+				let all_legal_moves: Vec<ChessMove> = MoveGen::new_legal(board).collect();
+				let move_: ChessMove = loop {
+					let move_ = prompt_str(&format!("{name}, your move: "));
+					// if move_.len() > 5 { continue } // TODO?
+					let move_: ChessMove = match (ChessMove::from_str(&move_), ChessMove::from_san(board, &move_)) {
+						(Ok(move_), _) => move_,
+						(_, Ok(move_)) => move_,
+						(Err(_), Err(_)) => { println!("Invalid move"); continue }
+					};
+					if all_legal_moves.contains(&move_) { break move_ } else { println!("Illegal move"); }
+				};
+				move_
+			}
 		}
 	}
 	pub fn name(&self) -> String {
@@ -1606,6 +1753,8 @@ enum AlgoPlayer {
 	PiecesFreedomDiffSTM,
 	NegPiecesFreedomDiff,
 	NegPiecesFreedomDiffSTM,
+	// BruteForceMinMax { depth: u8 },
+	// AlphaBeta { depth?: u8 },
 	Mix(AlgoPlayerMix),
 	MixUnderSignedSqrt(AlgoPlayerMix),
 }
@@ -1947,6 +2096,252 @@ fn hash_to_string_base32(mut hash: u64) -> String {
 	assert_eq!(0, hash);
 	// chars.reverse(); // TODO?
 	chars.into_iter().join("")
+}
+
+
+
+
+
+struct BoardToHumanViewableConfig { beautiful_output: bool, show_files_ranks: bool, show_pieces_diff: bool }
+impl BoardToHumanViewableConfig {
+	fn all() -> Self {
+		Self { beautiful_output: true, show_files_ranks: true, show_pieces_diff: true }
+	}
+}
+fn board_to_human_viewable(board: &Board, config: BoardToHumanViewableConfig) -> String {
+	const FILES: [&str; 8] = ["a", "b", "c", "d", "e", "f", "g", "h"];
+	const RANKS: [&str; 8] = ["1", "2", "3", "4", "5", "6", "7", "8"];
+	let x_line: String = format!("  {}", FILES.join(" "));
+	let options_pieces_diff_lost_str = if config.show_pieces_diff {
+		Some(get_pieces_diff_lost_str(board, VecPieceToStringConfig { separator: None, is_beautiful: true }))
+	} else {
+		None
+	};
+	let approx_capacity: usize = if config.show_files_ranks { 250 } else { 200 }; // 64*2 +? 16*4
+	let mut res: String = String::with_capacity(approx_capacity);
+	if config.show_files_ranks {
+		res += &x_line;
+		res += "\n";
+	}
+	let board_builder: BoardBuilder = board.into();
+	for y in (0..8).rev() {
+		if y != 7 {
+			res += "\n";
+		}
+		for x in 0..8 {
+			let index = y*8 + x;
+			let square = ALL_SQUARES[index];
+			let option_piece_and_color = board_builder[square];
+			if x == 0 {
+				res += RANKS[y];
+				res += " ";
+			}
+			res += &if config.beautiful_output {
+				chess_pieces_unicode::get(option_piece_and_color)
+			} else {
+				chess_pieces_ascii::get(option_piece_and_color)
+			}.to_string();
+			res += " ";
+			if x == 7 {
+				res += RANKS[y];
+				if config.show_pieces_diff {
+					match y {
+						0 => { res += " "; res += &options_pieces_diff_lost_str.as_ref().unwrap().white_pieces }
+						7 => { res += " "; res += &options_pieces_diff_lost_str.as_ref().unwrap().black_pieces }
+						_ => {}
+					}
+				}
+			}
+		}
+	}
+	if config.show_files_ranks {
+		res += "\n";
+		res += &x_line;
+	}
+	res.shrink_to_fit();
+	res
+}
+
+#[derive(Clone, Copy)]
+struct VecPieceToStringConfig { separator: Option<&'static str>, is_beautiful: bool }
+fn vec_piece_to_string(pieces: Vec<Piece>, color: Color, config: VecPieceToStringConfig) -> String {
+	pieces
+		.into_iter()
+		.map(|piece| {
+			let option_piece_and_color = Some((piece, color));
+			let get_chess_piece = if config.is_beautiful { chess_pieces_unicode::get } else { chess_pieces_ascii::get };
+			get_chess_piece(option_piece_and_color).to_string()
+		})
+		.reduce(|acc, el| acc + config.separator.unwrap_or_default() + &el)
+		.unwrap_or_default()
+}
+
+fn get_pieces_diff_lost_str(board: &Board, vec_piece_to_string_config: VecPieceToStringConfig) -> PiecesByColor<String> {
+	let PiecesByColor { white_pieces, black_pieces } = get_pieces_diff_lost(board);
+	PiecesByColor {
+		white_pieces: vec_piece_to_string(white_pieces, Color::White, vec_piece_to_string_config),
+		black_pieces: vec_piece_to_string(black_pieces, Color::Black, vec_piece_to_string_config),
+	}
+}
+#[test]
+fn get_pieces_diff_lost_str_() {
+	/* ♚♛♜♝♞♟ ♔♕♖♗♘♙ */
+	let expected = PiecesByColor {
+		white_pieces: "♟ ♟ ♟ ♟".to_string(),
+		black_pieces: "♕ ♖ ♗ ♘".to_string()
+	};
+	let actual = get_pieces_diff_lost_str(
+		&Board::from_fen("r1b1k1n1/pppppppp/8/8/8/8/P1P1P1P1/RNBQKBNR w KQq - 0 1".to_string()).unwrap(),
+		VecPieceToStringConfig { separator: Some(" "), is_beautiful: true },
+	);
+	// let expected_chars: Vec<char> = expected.chars().collect();
+	// let actual_chars: Vec<char> = actual.chars().collect();
+	assert_eq!(expected, actual);
+}
+
+/// Returns `{white_pieces: Vec<Piece>, black_pieces: Vec<Piece>}`,
+/// where `white_pieces` - pieces that white have,
+/// and black dont, and `black_pieces` - vice versa.
+fn get_pieces_diff_have(board: &Board) -> PiecesByColor<Vec<Piece>> {
+	let PiecesByColor { mut white_pieces, mut black_pieces } = get_pieces_by_color(board);
+	white_pieces.sort();
+	black_pieces.sort();
+	fn pieces_to_some_pieces(pieces: Vec<Piece>) -> Vec<Option<Piece>> {
+		pieces
+			.into_iter()
+			.map(Some)
+			.collect()
+	}
+	let mut white_pieces: Vec<Option<Piece>> = pieces_to_some_pieces(white_pieces);
+	let mut black_pieces: Vec<Option<Piece>> = pieces_to_some_pieces(black_pieces);
+	let mut i = 0;
+	let mut j = 0;
+	while i < white_pieces.len() || j < black_pieces.len() {
+		let white_piece = &mut white_pieces[i];
+		let black_piece = &mut black_pieces[j];
+		match white_piece.cmp(&black_piece) {
+			Ordering::Equal => {
+				*white_piece = None;
+				*black_piece = None;
+				i += 1;
+				j += 1;
+			}
+			Ordering::Greater => { j += 1 }
+			Ordering::Less => { i += 1 }
+		}
+	}
+	let mut white_pieces: Vec<Piece> = white_pieces.into_iter().flatten().collect();
+	let mut black_pieces: Vec<Piece> = black_pieces.into_iter().flatten().collect();
+	white_pieces.reverse();
+	black_pieces.reverse();
+	white_pieces.shrink_to_fit();
+	black_pieces.shrink_to_fit();
+	PiecesByColor { white_pieces, black_pieces }
+}
+
+/// Returns `{white_pieces: Vec<Piece>, black_pieces: Vec<Piece>}`,
+/// inversed to [`get_pieces_diff_have`].
+fn get_pieces_diff_lost(board: &Board) -> PiecesByColor<Vec<Piece>> {
+	let PiecesByColor { white_pieces, black_pieces } = get_pieces_diff_have(board);
+	PiecesByColor { white_pieces: black_pieces, black_pieces: white_pieces }
+}
+
+#[derive(Debug, PartialEq)]
+struct PiecesByColor<T> { white_pieces: T, black_pieces: T }
+/// Returns unsorted `(white_pieces, black_pieces)`
+fn get_pieces_by_color(board: &Board) -> PiecesByColor<Vec<Piece>> {
+	let board_builder: BoardBuilder = board.into();
+	let mut white_pieces = Vec::new();
+	let mut black_pieces = Vec::new();
+	for square in ALL_SQUARES {
+		let option_piece_and_color = board_builder[square];
+		match option_piece_and_color {
+			Some((piece, Color::White)) => { white_pieces.push(piece) }
+			Some((piece, Color::Black)) => { black_pieces.push(piece) }
+			_ => {}
+		}
+	}
+	PiecesByColor { white_pieces, black_pieces }
+}
+
+mod chess_pieces_ascii {
+	use chess::{Color, Piece};
+
+	pub const NONE: char = '.';
+
+	pub const PAWN_WHITE  : char = 'P';
+	pub const KNIGHT_WHITE: char = 'N';
+	pub const BISHOP_WHITE: char = 'B';
+	pub const ROOK_WHITE  : char = 'R';
+	pub const QUEEN_WHITE : char = 'Q';
+	pub const KING_WHITE  : char = 'K';
+
+	pub const PAWN_BLACK  : char = 'p';
+	pub const KNIGHT_BLACK: char = 'n';
+	pub const BISHOP_BLACK: char = 'b';
+	pub const ROOK_BLACK  : char = 'r';
+	pub const QUEEN_BLACK : char = 'q';
+	pub const KING_BLACK  : char = 'k';
+
+	pub fn get(option_piece_and_color: Option<(Piece, Color)>) -> char {
+		let Some(piece_and_color) = option_piece_and_color else { return NONE };
+		match piece_and_color {
+			(Piece::Pawn  , Color::White) => PAWN_WHITE,
+			(Piece::Knight, Color::White) => KNIGHT_WHITE,
+			(Piece::Bishop, Color::White) => BISHOP_WHITE,
+			(Piece::Rook  , Color::White) => ROOK_WHITE,
+			(Piece::Queen , Color::White) => QUEEN_WHITE,
+			(Piece::King  , Color::White) => KING_WHITE,
+
+			(Piece::Pawn  , Color::Black) => PAWN_BLACK,
+			(Piece::Knight, Color::Black) => KNIGHT_BLACK,
+			(Piece::Bishop, Color::Black) => BISHOP_BLACK,
+			(Piece::Rook  , Color::Black) => ROOK_BLACK,
+			(Piece::Queen , Color::Black) => QUEEN_BLACK,
+			(Piece::King  , Color::Black) => KING_BLACK,
+		}
+	}
+}
+
+mod chess_pieces_unicode {
+	use chess::{Color, Piece};
+
+	pub const NONE: char = '.';
+
+	/* ♚♛♜♝♞♟ ♔♕♖♗♘♙ */
+
+	pub const PAWN_WHITE  : char = '♟';
+	pub const KNIGHT_WHITE: char = '♞';
+	pub const BISHOP_WHITE: char = '♝';
+	pub const ROOK_WHITE  : char = '♜';
+	pub const QUEEN_WHITE : char = '♛';
+	pub const KING_WHITE  : char = '♚';
+
+	pub const PAWN_BLACK  : char = '♙';
+	pub const KNIGHT_BLACK: char = '♘';
+	pub const BISHOP_BLACK: char = '♗';
+	pub const ROOK_BLACK  : char = '♖';
+	pub const QUEEN_BLACK : char = '♕';
+	pub const KING_BLACK  : char = '♔';
+
+	pub fn get(option_piece_and_color: Option<(Piece, Color)>) -> char {
+		let Some(piece_and_color) = option_piece_and_color else { return NONE };
+		match piece_and_color {
+			(Piece::Pawn  , Color::White) => PAWN_WHITE,
+			(Piece::Knight, Color::White) => KNIGHT_WHITE,
+			(Piece::Bishop, Color::White) => BISHOP_WHITE,
+			(Piece::Rook  , Color::White) => ROOK_WHITE,
+			(Piece::Queen , Color::White) => QUEEN_WHITE,
+			(Piece::King  , Color::White) => KING_WHITE,
+
+			(Piece::Pawn  , Color::Black) => PAWN_BLACK,
+			(Piece::Knight, Color::Black) => KNIGHT_BLACK,
+			(Piece::Bishop, Color::Black) => BISHOP_BLACK,
+			(Piece::Rook  , Color::Black) => ROOK_BLACK,
+			(Piece::Queen , Color::Black) => QUEEN_BLACK,
+			(Piece::King  , Color::Black) => KING_BLACK,
+		}
+	}
 }
 
 

@@ -26,7 +26,7 @@ pub fn print(msg: impl ToString) {
 	flush();
 }
 
-pub fn prompt_string(text: &str) -> String {
+pub fn prompt_str(text: &str) -> String {
 	use std::io::{BufRead, stdin};
 	print(text);
 	let mut line = String::new();
@@ -36,39 +36,31 @@ pub fn prompt_string(text: &str) -> String {
 
 /// user better dont make mistakes or it will crash
 pub fn prompt_once_unwrap<T: FromStr>(text: &str) -> T where <T as FromStr>::Err: Debug {
-	let input = prompt_string(text);
+	let input = prompt_str(text);
 	input.parse().unwrap()
 }
 
 pub fn prompt_once<T: FromStr>(text: &str) -> Result<T, <T as FromStr>::Err> {
-	let input = prompt_string(text);
+	let input = prompt_str(text);
 	input.parse()
 }
 
 pub fn prompt<T: FromStr>(text: &str) -> T where <T as FromStr>::Err: Debug {
 	loop {
 		match prompt_once(text) {
-			Ok(input) => {
-				return input
-			}
-			Err(err) => {
-				println!("Error: {err:?}");
-			}
+			Ok(input) => { return input }
+			Err(err) => { println!("Error: {err:?}"); }
 		}
 	}
 }
 
 pub fn prompt_with_default<T: FromStr>(text: &str, default: T) -> T where <T as FromStr>::Err: Debug {
 	loop {
-		let input = prompt_string(text);
+		let input = prompt_str(text);
 		if input.is_empty() { return default }
 		match input.parse() {
-			Ok(input) => {
-				return input
-			}
-			Err(err) => {
-				println!("Error: {err:?}");
-			}
+			Ok(input) => { return input }
+			Err(err) => { println!("Error: {err:?}"); }
 		}
 	}
 }
