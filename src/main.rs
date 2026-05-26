@@ -375,9 +375,12 @@ fn main() {
 
 			let (game_result, Some(game)) = play_game(&player_white, &player_black, PlayGameParams {
 				moves_limit,
+				print_players_moves_scores: true,
 				get_game: true,
 			}) else { unreachable!() };
-
+			println!();
+			println!("{}", board_to_human_viewable(&game.current_position(), BoardToHumanViewableConfig::all()));
+			println!();
 			println!("Game Result: {game_result:?}");
 			println!();
 			println!("moves: {}", game.to_uci());
@@ -541,6 +544,7 @@ fn main() {
 		{
 			let play_game_params = PlayGameParams {
 				moves_limit: config.play_game_moves_limit,
+				print_players_moves_scores: false,
 				get_game: true,
 			};
 			{ // best NN vs best
@@ -709,6 +713,7 @@ fn play_tournament(
 	let players_n = players.len();
 	let play_game_params = PlayGameParams {
 		moves_limit: params.moves_limit,
+		print_players_moves_scores: false,
 		get_game: false,
 	};
 	match params.compute_unit {
@@ -863,13 +868,13 @@ impl PlayerInTournamentStats {
 #[derive(Debug, Clone, Copy)]
 struct PlayGameParams {
 	moves_limit: u32,
-	// print_players_moves_scores: bool, // TODO
+	print_players_moves_scores: bool,
 	get_game: bool,
 }
 
 fn play_game(white: &Player, black: &Player, params: PlayGameParams) -> (GameResult_, Option<Game>) {
 	let mut rng = rng();
-	let mut game = Game::new(); // TODO!(optim): dont use Game, use Board directly
+	let mut game = Game::new(); // TODO(optim): dont use Game, use Board directly
 	let mut move_number: u32 = 0;
 	while game.result().is_none() && move_number < params.moves_limit {
 		move_number += 1;
@@ -879,7 +884,19 @@ fn play_game(white: &Player, black: &Player, params: PlayGameParams) -> (GameRes
 			Color::White => white,
 			Color::Black => black,
 		};
-		let selected_move = player_to_make_move.select_move(&board, &mut rng);
+		let (selected_move, moves_and_scores) = player_to_make_move.select_move(&board, &mut rng);
+		if params.print_players_moves_scores {
+			println!();
+			if let Some(moves_and_scores) = moves_and_scores {
+				for (move_, score) in moves_and_scores {
+					println!("{move_}: {score}");
+				}
+				println!();
+			} else {
+				println!("Moves and Scores not provided");
+			}
+			println!("Selected move: {selected_move}");
+		}
 		let is_move_successful = game.make_move(selected_move);
 		assert!(is_move_successful);
 		if game.can_declare_draw() {
@@ -1223,7 +1240,7 @@ enum Player {
 	Human { name: String },
 }
 impl Player {
-	pub fn select_move(&self, board: &Board, rng: &mut impl RngExt) -> ChessMove {
+	pub fn select_move(&self, board: &Board, rng: &mut impl RngExt) -> (ChessMove, Option<Vec<(ChessMove, f)>>) {
 		use Player::*;
 		match self {
 			NN(nn) => nn.select_move(board),
@@ -1243,7 +1260,7 @@ impl Player {
 					};
 					if all_legal_moves.contains(&move_) { break move_ } else { println!("Illegal move"); }
 				};
-				move_
+				(move_, None)
 			}
 		}
 	}
@@ -1346,16 +1363,18 @@ impl NN {
 				.collect()
 		}
 	}
-	pub fn select_move(&self, board: &Board) -> ChessMove {
-		let moves_and_scores = MoveGen::new_legal(board)
-			.flat_map(|move_| {
+	pub fn select_move(&self, board: &Board) -> (ChessMove, Option<Vec<(ChessMove, f)>>) {
+		let moves_and_scores: Vec<(ChessMove, f)> = MoveGen::new_legal(board)
+			.map(|move_| {
 				let board_after_move = board.make_move_new(move_);
 				let score = self.eval_board(&board_after_move);
-				score.is_finite().then_some((move_, score))
-			});
+				(move_, score)
+			})
+			.collect();
 		let (best_move, _best_move_score) = match board.side_to_move() {
 			Color::White => {
 				moves_and_scores
+					.iter()
 					.max_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
 					.unwrap_or_else(|| {
 						println!();
@@ -1374,6 +1393,7 @@ impl NN {
 			}
 			Color::Black => {
 				moves_and_scores
+					.iter()
 					.min_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
 					.unwrap_or_else(|| {
 						println!();
@@ -1391,7 +1411,7 @@ impl NN {
 					})
 			}
 		};
-		best_move
+		(*best_move, Some(moves_and_scores))
 	}
 	fn eval_board(&self, board: &Board) -> f {
 		let nn_input = board_to_vector_for_nn(board);
@@ -1765,7 +1785,7 @@ impl AlgoPlayer {
 	pub fn mix_uss_new_random(rng: &mut impl RngExt) -> Self {
 		Self::MixUnderSignedSqrt(AlgoPlayerMix::new_random(rng))
 	}
-	pub fn select_move(self, board: &Board, rng: &mut impl RngExt) -> ChessMove {
+	pub fn select_move(&self, board: &Board, rng: &mut impl RngExt) -> (ChessMove, Option<Vec<(ChessMove, f)>>) {
 		use AlgoPlayer::*;
 		match self {
 			RandomMover => {
@@ -1773,13 +1793,13 @@ impl AlgoPlayer {
 				let moves = moves.into_iter().collect::<Vec<_>>();
 				let random_move_index = rng.random_range(0..moves.len());
 				let random_move = moves[random_move_index];
-				random_move
+				(random_move, None)
 			}
 			MiddleMover => {
 				let moves = MoveGen::new_legal(board);
 				let moves = moves.into_iter().collect::<Vec<_>>();
 				let middle_move = moves[moves.len()/2];
-				middle_move
+				(middle_move, None)
 			}
 			MaterialDelta
 			| MaterialDeltaSTM
@@ -1796,15 +1816,17 @@ impl AlgoPlayer {
 			| Mix(_)
 			| MixUnderSignedSqrt(_)
 			=> {
-				let moves_and_scores = MoveGen::new_legal(board)
-					.flat_map(|move_| {
+				let moves_and_scores: Vec<(ChessMove, f)> = MoveGen::new_legal(board)
+					.map(|move_| {
 						let board_after_move = board.make_move_new(move_);
 						let score = self.eval_board(&board_after_move, rng);
-						score.is_finite().then_some((move_, score))
-					});
+						(move_, score)
+					})
+					.collect();
 				let (best_move, _best_move_score) = match board.side_to_move() {
 					Color::White => {
 						moves_and_scores
+							.iter()
 							.max_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
 							.unwrap_or_else(|| {
 								println!();
@@ -1823,6 +1845,7 @@ impl AlgoPlayer {
 					}
 					Color::Black => {
 						moves_and_scores
+							.iter()
 							.min_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
 							.unwrap_or_else(|| {
 								println!();
@@ -1840,7 +1863,7 @@ impl AlgoPlayer {
 							})
 					}
 				};
-				best_move
+				(*best_move, Some(moves_and_scores))
 			}
 		}
 	}
