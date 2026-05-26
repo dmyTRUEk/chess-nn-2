@@ -884,7 +884,7 @@ fn play_game(white: &Player, black: &Player, params: PlayGameParams) -> (GameRes
 			Color::White => white,
 			Color::Black => black,
 		};
-		let (selected_move, moves_and_scores) = player_to_make_move.select_move(&board, &mut rng);
+		let (selected_move, moves_and_scores) = player_to_make_move.select_move(&board, &mut rng, SelectMoveParams { get_moves_scores: params.print_players_moves_scores });
 		if params.print_players_moves_scores {
 			println!();
 			if let Some(moves_and_scores) = moves_and_scores {
@@ -1231,6 +1231,17 @@ impl NumberOfDepthChannels {
 
 
 
+#[derive(Debug, Clone, Copy)]
+struct SelectMoveParams {
+	get_moves_scores: bool, // TODO: use?
+}
+
+trait SelectMove {
+	fn select_move(&self, board: &Board, rng: &mut impl RngExt, params: SelectMoveParams) -> (ChessMove, Option<Vec<(ChessMove, f)>>);
+}
+
+
+
 #[derive(Clone)]
 #[repr(u8)]
 enum Player {
@@ -1240,30 +1251,6 @@ enum Player {
 	Human { name: String },
 }
 impl Player {
-	pub fn select_move(&self, board: &Board, rng: &mut impl RngExt) -> (ChessMove, Option<Vec<(ChessMove, f)>>) {
-		use Player::*;
-		match self {
-			NN(nn) => nn.select_move(board),
-			Algo(algo) => algo.select_move(board, rng),
-			Human { name } => {
-				println!();
-				println!("{}", board_to_human_viewable(board, BoardToHumanViewableConfig::all()));
-				println!();
-				let all_legal_moves: Vec<ChessMove> = MoveGen::new_legal(board).collect();
-				let move_: ChessMove = loop {
-					let move_ = prompt_str(&format!("{name}, your move: "));
-					// if move_.len() > 5 { continue } // TODO?
-					let move_: ChessMove = match (ChessMove::from_str(&move_), ChessMove::from_san(board, &move_)) {
-						(Ok(move_), _) => move_,
-						(_, Ok(move_)) => move_,
-						(Err(_), Err(_)) => { println!("Invalid move"); continue }
-					};
-					if all_legal_moves.contains(&move_) { break move_ } else { println!("Illegal move"); }
-				};
-				(move_, None)
-			}
-		}
-	}
 	pub fn name(&self) -> String {
 		use Player::*;
 		match self {
@@ -1295,6 +1282,32 @@ impl Player {
 			}
 			Algo(_) => {}
 			Human { name: _ } => {}
+		}
+	}
+}
+impl SelectMove for Player {
+	fn select_move(&self, board: &Board, rng: &mut impl RngExt, params: SelectMoveParams) -> (ChessMove, Option<Vec<(ChessMove, f)>>) {
+		use Player::*;
+		match self {
+			NN(nn) => nn.select_move(board, rng, params),
+			Algo(algo) => algo.select_move(board, rng, params),
+			Human { name } => {
+				println!();
+				println!("{}", board_to_human_viewable(board, BoardToHumanViewableConfig::all()));
+				println!();
+				let all_legal_moves: Vec<ChessMove> = MoveGen::new_legal(board).collect();
+				let move_: ChessMove = loop {
+					let move_ = prompt_str(&format!("{name}, your move: "));
+					// if move_.len() > 5 { continue } // TODO?
+					let move_: ChessMove = match (ChessMove::from_str(&move_), ChessMove::from_san(board, &move_)) {
+						(Ok(move_), _) => move_,
+						(_, Ok(move_)) => move_,
+						(Err(_), Err(_)) => { println!("Invalid move"); continue }
+					};
+					if all_legal_moves.contains(&move_) { break move_ } else { println!("Illegal move"); }
+				};
+				(move_, None)
+			}
 		}
 	}
 }
@@ -1362,56 +1375,6 @@ impl NN {
 				.map(|[size_in, size_out]| NNLayer::new_random(size_in, size_out, rng))
 				.collect()
 		}
-	}
-	pub fn select_move(&self, board: &Board) -> (ChessMove, Option<Vec<(ChessMove, f)>>) {
-		let moves_and_scores: Vec<(ChessMove, f)> = MoveGen::new_legal(board)
-			.map(|move_| {
-				let board_after_move = board.make_move_new(move_);
-				let score = self.eval_board(&board_after_move);
-				(move_, score)
-			})
-			.collect();
-		let (best_move, _best_move_score) = match board.side_to_move() {
-			Color::White => {
-				moves_and_scores
-					.iter()
-					.max_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
-					.unwrap_or_else(|| {
-						println!();
-						dbg!(self.get_activation_fns());
-						let moves_and_scores = MoveGen::new_legal(board)
-							.map(|move_| {
-								let board_after_move = board.make_move_new(move_);
-								let score = self.eval_board(&board_after_move);
-								(move_, score)
-							});
-						for (move_, score) in moves_and_scores {
-							println!("{move_}: {score}");
-						}
-						panic!()
-					})
-			}
-			Color::Black => {
-				moves_and_scores
-					.iter()
-					.min_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
-					.unwrap_or_else(|| {
-						println!();
-						dbg!(self.get_activation_fns());
-						let moves_and_scores = MoveGen::new_legal(board)
-							.map(|move_| {
-								let board_after_move = board.make_move_new(move_);
-								let score = self.eval_board(&board_after_move);
-								(move_, score)
-							});
-						for (move_, score) in moves_and_scores {
-							println!("{move_}: {score}");
-						}
-						panic!()
-					})
-			}
-		};
-		(*best_move, Some(moves_and_scores))
 	}
 	fn eval_board(&self, board: &Board) -> f {
 		let nn_input = board_to_vector_for_nn(board);
@@ -1561,6 +1524,58 @@ impl NN {
 		let nn = NN { layers };
 		assert_eq!(hash_to_string(hash), nn.calc_hash_to_string(), "loaded and calculated hashes must match");
 		nn
+	}
+}
+impl SelectMove for NN {
+	fn select_move(&self, board: &Board, _rng: &mut impl RngExt, _params: SelectMoveParams) -> (ChessMove, Option<Vec<(ChessMove, f)>>) {
+		let moves_and_scores: Vec<(ChessMove, f)> = MoveGen::new_legal(board)
+			.map(|move_| {
+				let board_after_move = board.make_move_new(move_);
+				let score = self.eval_board(&board_after_move);
+				(move_, score)
+			})
+			.collect();
+		let (best_move, _best_move_score) = match board.side_to_move() {
+			Color::White => {
+				moves_and_scores
+					.iter()
+					.max_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
+					.unwrap_or_else(|| {
+						println!();
+						dbg!(self.get_activation_fns());
+						let moves_and_scores = MoveGen::new_legal(board)
+							.map(|move_| {
+								let board_after_move = board.make_move_new(move_);
+								let score = self.eval_board(&board_after_move);
+								(move_, score)
+							});
+						for (move_, score) in moves_and_scores {
+							println!("{move_}: {score}");
+						}
+						panic!()
+					})
+			}
+			Color::Black => {
+				moves_and_scores
+					.iter()
+					.min_by(|(_m1,s1), (_m2,s2)| s1.partial_cmp(s2).unwrap())
+					.unwrap_or_else(|| {
+						println!();
+						dbg!(self.get_activation_fns());
+						let moves_and_scores = MoveGen::new_legal(board)
+							.map(|move_| {
+								let board_after_move = board.make_move_new(move_);
+								let score = self.eval_board(&board_after_move);
+								(move_, score)
+							});
+						for (move_, score) in moves_and_scores {
+							println!("{move_}: {score}");
+						}
+						panic!()
+					})
+			}
+		};
+		(*best_move, Some(moves_and_scores))
 	}
 }
 
@@ -1785,7 +1800,82 @@ impl AlgoPlayer {
 	pub fn mix_uss_new_random(rng: &mut impl RngExt) -> Self {
 		Self::MixUnderSignedSqrt(AlgoPlayerMix::new_random(rng))
 	}
-	pub fn select_move(&self, board: &Board, rng: &mut impl RngExt) -> (ChessMove, Option<Vec<(ChessMove, f)>>) {
+	pub fn eval_board(self, board: &Board, rng: &mut impl RngExt) -> f {
+		use AlgoPlayer::*;
+		match self {
+			RandomMover => rng.random_range(-50. .. 50.),
+			MiddleMover => unreachable!(),
+			Mix(mix) => {
+				AlgoPlayerMix::ALGOS
+					.map(|algo| algo.eval_board(board, rng))
+					.iter().zip_eq(mix.to_array())
+					.map(|(score, weight)| score * weight)
+					.sum()
+			}
+			MixUnderSignedSqrt(mix) => {
+				let under_sqrt = AlgoPlayerMix::ALGOS
+					.map(|algo| algo.eval_board(board, rng))
+					.iter().zip_eq(mix.to_array())
+					.map(|(&score, weight)| signed_sqrt(score) * weight)
+					.sum();
+				signed_square(under_sqrt)
+			}
+			_ => self._eval_board(board)
+		}
+	}
+	fn _eval_board(self, board: &Board) -> f {
+		use AlgoPlayer::*;
+		match self {
+			RandomMover
+			| MiddleMover
+			=> unreachable!(),
+
+			MaterialDelta => board.count_material_delta(),
+			MaterialDeltaSTM => MaterialDelta._eval_board(board) * board.side_to_move_to_sign(),
+			NegMaterialDelta => -MaterialDelta._eval_board(board),
+			NegMaterialDeltaSTM => -MaterialDeltaSTM._eval_board(board),
+
+			PiecesFreedom => MoveGen::new_legal(board).count() as f,
+			PiecesFreedomSTM => PiecesFreedom._eval_board(board) * board.side_to_move_to_sign(),
+			NegPiecesFreedom => -PiecesFreedom._eval_board(board),
+			NegPiecesFreedomSTM => -PiecesFreedomSTM._eval_board(board),
+
+			PiecesFreedomDiff => {
+				let board_toggled_stm = board.null_move(); // "toggle" side to move
+				PiecesFreedom._eval_board(board) - board_toggled_stm.map(|b| PiecesFreedom._eval_board(&b)).unwrap_or(0.)
+			}
+			PiecesFreedomDiffSTM => PiecesFreedomDiff._eval_board(board) * board.side_to_move_to_sign(),
+			NegPiecesFreedomDiff => -PiecesFreedomDiff._eval_board(board),
+			NegPiecesFreedomDiffSTM => -PiecesFreedomDiffSTM._eval_board(board),
+
+			Mix(_) => unreachable!(),
+			MixUnderSignedSqrt(_) => unreachable!(),
+		}
+	}
+	pub fn get_name(&self) -> String {
+		use AlgoPlayer::*;
+		match self {
+			RandomMover => "RandomMover".to_string(),
+			MiddleMover => "MiddleMover".to_string(),
+			MaterialDelta => "MaterialDelta".to_string(),
+			MaterialDeltaSTM => "MaterialDelta StM".to_string(),
+			NegMaterialDelta => "-MaterialDelta".to_string(),
+			NegMaterialDeltaSTM => "-MaterialDelta StM".to_string(),
+			PiecesFreedom => "PiecesFreedom".to_string(),
+			PiecesFreedomSTM => "PiecesFreedom StM".to_string(),
+			NegPiecesFreedom => "-PiecesFreedom".to_string(),
+			NegPiecesFreedomSTM => "-PiecesFreedom StM".to_string(),
+			PiecesFreedomDiff => "PiecesFreedomDiff".to_string(),
+			PiecesFreedomDiffSTM => "PiecesFreedomDiff StM".to_string(),
+			NegPiecesFreedomDiff => "-PiecesFreedomDiff".to_string(),
+			NegPiecesFreedomDiffSTM => "-PiecesFreedomDiff StM".to_string(),
+			Mix(mix) => format!("Mix {} ({})", mix.calc_hash_to_string(), mix.to_string()),
+			MixUnderSignedSqrt(mix) => format!("MixUSS {} ({})", mix.calc_hash_to_string(), mix.to_string()),
+		}
+	}
+}
+impl SelectMove for AlgoPlayer {
+	fn select_move(&self, board: &Board, rng: &mut impl RngExt, _params: SelectMoveParams) -> (ChessMove, Option<Vec<(ChessMove, f)>>) {
 		use AlgoPlayer::*;
 		match self {
 			RandomMover => {
@@ -1865,79 +1955,6 @@ impl AlgoPlayer {
 				};
 				(*best_move, Some(moves_and_scores))
 			}
-		}
-	}
-	pub fn eval_board(self, board: &Board, rng: &mut impl RngExt) -> f {
-		use AlgoPlayer::*;
-		match self {
-			RandomMover => rng.random_range(-50. .. 50.),
-			MiddleMover => unreachable!(),
-			Mix(mix) => {
-				AlgoPlayerMix::ALGOS
-					.map(|algo| algo.eval_board(board, rng))
-					.iter().zip_eq(mix.to_array())
-					.map(|(score, weight)| score * weight)
-					.sum()
-			}
-			MixUnderSignedSqrt(mix) => {
-				let under_sqrt = AlgoPlayerMix::ALGOS
-					.map(|algo| algo.eval_board(board, rng))
-					.iter().zip_eq(mix.to_array())
-					.map(|(&score, weight)| signed_sqrt(score) * weight)
-					.sum();
-				signed_square(under_sqrt)
-			}
-			_ => self._eval_board(board)
-		}
-	}
-	fn _eval_board(self, board: &Board) -> f {
-		use AlgoPlayer::*;
-		match self {
-			RandomMover
-			| MiddleMover
-			=> unreachable!(),
-
-			MaterialDelta => board.count_material_delta(),
-			MaterialDeltaSTM => MaterialDelta._eval_board(board) * board.side_to_move_to_sign(),
-			NegMaterialDelta => -MaterialDelta._eval_board(board),
-			NegMaterialDeltaSTM => -MaterialDeltaSTM._eval_board(board),
-
-			PiecesFreedom => MoveGen::new_legal(board).count() as f,
-			PiecesFreedomSTM => PiecesFreedom._eval_board(board) * board.side_to_move_to_sign(),
-			NegPiecesFreedom => -PiecesFreedom._eval_board(board),
-			NegPiecesFreedomSTM => -PiecesFreedomSTM._eval_board(board),
-
-			PiecesFreedomDiff => {
-				let board_toggled_stm = board.null_move(); // "toggle" side to move
-				PiecesFreedom._eval_board(board) - board_toggled_stm.map(|b| PiecesFreedom._eval_board(&b)).unwrap_or(0.)
-			}
-			PiecesFreedomDiffSTM => PiecesFreedomDiff._eval_board(board) * board.side_to_move_to_sign(),
-			NegPiecesFreedomDiff => -PiecesFreedomDiff._eval_board(board),
-			NegPiecesFreedomDiffSTM => -PiecesFreedomDiffSTM._eval_board(board),
-
-			Mix(_) => unreachable!(),
-			MixUnderSignedSqrt(_) => unreachable!(),
-		}
-	}
-	pub fn get_name(&self) -> String {
-		use AlgoPlayer::*;
-		match self {
-			RandomMover => "RandomMover".to_string(),
-			MiddleMover => "MiddleMover".to_string(),
-			MaterialDelta => "MaterialDelta".to_string(),
-			MaterialDeltaSTM => "MaterialDelta StM".to_string(),
-			NegMaterialDelta => "-MaterialDelta".to_string(),
-			NegMaterialDeltaSTM => "-MaterialDelta StM".to_string(),
-			PiecesFreedom => "PiecesFreedom".to_string(),
-			PiecesFreedomSTM => "PiecesFreedom StM".to_string(),
-			NegPiecesFreedom => "-PiecesFreedom".to_string(),
-			NegPiecesFreedomSTM => "-PiecesFreedom StM".to_string(),
-			PiecesFreedomDiff => "PiecesFreedomDiff".to_string(),
-			PiecesFreedomDiffSTM => "PiecesFreedomDiff StM".to_string(),
-			NegPiecesFreedomDiff => "-PiecesFreedomDiff".to_string(),
-			NegPiecesFreedomDiffSTM => "-PiecesFreedomDiff StM".to_string(),
-			Mix(mix) => format!("Mix {} ({})", mix.calc_hash_to_string(), mix.to_string()),
-			MixUnderSignedSqrt(mix) => format!("MixUSS {} ({})", mix.calc_hash_to_string(), mix.to_string()),
 		}
 	}
 }
