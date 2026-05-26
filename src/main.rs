@@ -1554,6 +1554,8 @@ fn board_to_vector_for_nn(board: &Board) -> Vec<f> {
 enum AlgoPlayer {
 	RandomMover,
 	MiddleMover,
+	// Centrist, // tries to keep pieces closer to center // TODO
+	// Positionist, // tries to keep pieces at their "good" positions // TODO
 	MaterialDelta,
 	MaterialDeltaSTM,
 	NegMaterialDelta,
@@ -1895,13 +1897,16 @@ fn hash_to_string_hex(hash: u64) -> String {
 }
 
 fn hash_to_string_base32(mut hash: u64) -> String {
-	const ALPHABET: [char; 32] = ['0','1','2','3','4','5','6','7','8','9',/*'a',*/'b','c','d',/*'e',*/'f','g','h','i','j','k','l','m','n',/*'o',*/'p','q','r','s',/*'t',*/'u','v','w','x','y','z']; // removed 4 most popular letters, src: https://en.wikipedia.org/wiki/Letter_frequency
-	let mut chars = Vec::with_capacity(13); // len = ceil(64/5)
-	while hash > 0 {
+	const ALPHABET: [char; 32] = ['0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f','g','h','i',/*'j',*/'k','l','m','n','o','p',/*'q',*/'r','s','t','u','v','w',/*'x',*/'y',/*'z',*/]; // removed 4 least popular letters, src: https://en.wikipedia.org/wiki/Letter_frequency // TODO?: change
+	const N: usize = 13; // len = ceil(64/5)
+	let mut chars = Vec::with_capacity(N);
+	for _ in 0..13 {
 		// TODO?: if hash < 32 => ?
 		chars.push(ALPHABET[(hash % 32) as usize]);
 		hash /= 32;
 	}
+	assert_eq!(13, chars.len());
+	assert_eq!(0, hash);
 	// chars.reverse(); // TODO?
 	chars.into_iter().join("")
 }
@@ -1988,6 +1993,13 @@ mod tests {
 				if nn != NN::from_bytes(&nn.to_bytes()) { panic!() }
 			}
 		}
+	}
+
+	mod hash_to_string_base32 {
+		use super::*;
+		#[test] fn _0x_0000_0000_0000_0000() { assert_eq!("0000000000000", hash_to_string_base32(0x_0000_0000_0000_0000)); }
+		#[test] fn _0x_0000_0000_0000_0145() { assert_eq!("5a00000000000", hash_to_string_base32(0x_0000_0000_0000_0145)); }
+		#[test] fn _0x_1370_0000_0000_0000() { assert_eq!("0000000000u61", hash_to_string_base32(0x_1370_0000_0000_0000)); }
 	}
 }
 
