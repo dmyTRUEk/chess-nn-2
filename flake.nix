@@ -9,6 +9,8 @@
 			packages = with pkgs; [
 				(pkgs.python3.withPackages (python-pkgs: with python-pkgs; [
 					chess
+					matplotlib
+					pipe
 				]))
 			];
 		};
