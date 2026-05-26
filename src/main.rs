@@ -24,7 +24,7 @@
 	clippy::upper_case_acronyms,
 )]
 
-use std::{cmp::Ordering, path::PathBuf, time::Instant};
+use std::{cmp::Ordering, path::{Path, PathBuf}, time::Instant};
 
 use chess::{ALL_SQUARES, Action, Board, BoardBuilder, ChessMove, Color, Game, GameResult, MoveGen, Piece};
 use chrono::Local;
@@ -113,9 +113,15 @@ pub const NN_FILE_FORMAT_MAGIC: u64 = 0x_066262e3_145aaa67;
 
 
 #[derive(Debug)]
-struct Config {
+enum Task {
+	Train,
+	Inspect,
+	Play,
+}
+
+#[derive(Debug)]
+struct ConfigTrain {
 	compute_unit: ComputeUnit,
-	task: Task,
 	create_nn_from: CreateNNFrom,
 	nns_number: u32,
 	keep_top_nns_frac: f,
@@ -133,13 +139,16 @@ enum CreateNNFrom {
 	LoadFile(PathBuf),
 	InnerLayersSizes(Vec<u32>),
 }
-#[derive(Debug)]
-enum Task {
-	Train,
-	Inspect,
-	Play,
-}
 
+// struct ConfigInspect {}
+
+#[derive(Debug)]
+struct ConfigPlay {
+	compute_unit: ComputeUnit,
+	create_nn_from: CreateNNFrom,
+	play_game_moves_limit: u32,
+	algo_weights_clamp: f,
+}
 
 
 
@@ -197,7 +206,61 @@ fn main() {
 	// }
 	// return;
 
-	let config = {
+	let task: Task = loop {
+		break match prompt_with_name_and_default("Task (Train, Inspect, Play)", "train".to_string()).as_str() {
+			"t" | "train" => Task::Train,
+			"i" | "inspect" => Task::Inspect,
+			"p" | "play" => Task::Play,
+			_ => continue
+		}
+	};
+
+	fn load_nns_files() -> Vec<PathBuf> {
+		let mut nns_files = vec![];
+		for entry in std::fs::read_dir(".").unwrap() {
+			let path = entry.unwrap().path();
+			if path.is_file() && path.extension().is_some_and(|ext| ext == NN_FILE_FORMAT_EXT) && path.file_stem().is_some() {
+				nns_files.push(path);
+			}
+		}
+		nns_files
+	}
+
+	match task {
+		Task::Train => { /* continue */ }
+		Task::Inspect => {
+			// let load_nn_from_file: bool = loop {
+			// 	break match prompt_with_name_and_default("Load NN from file (Yes/No)", "yes".to_string()).as_str() {
+			// 		"y" | "yes" => true,
+			// 		"n" | "no" => false,
+			// 		_ => continue
+			// 	}
+			// };
+			let mut nns_files = load_nns_files();
+			if nns_files.is_empty() { unimplemented!() }
+			nns_files.sort();
+			for (i, nn_file) in nns_files.iter().enumerate() {
+				println!("{i}. {}", nn_file.file_stem().unwrap().display());
+			}
+			let index_of_nn_to_load = prompt_with_name_and_default("Index of NN to load", nns_files.len()-1);
+			let filename = &nns_files[index_of_nn_to_load];
+			let nn = NN::load_from_file(filename);
+			println!();
+			println!("Loaded NN's hash: {}", nn.calc_hash_to_string());
+			println!();
+			println!("all layer sizes: {:?}", nn.get_all_layers_sizes());
+			println!();
+			println!("activation fns: {:#?}", nn.get_activation_fns());
+			// TODO: more?
+			return
+		}
+		Task::Play => {
+			todo!();
+			return
+		}
+	}
+
+	let config: ConfigTrain = {
 		let compute_unit: ComputeUnit = loop {
 			break match prompt_with_name_and_default("Compute unit (cpu<n>, cpuall, gpu)", nn_default::COMPUTE_UNIT_STR.to_string()).as_str() {
 				// TODO(refactor): extract into `ComputeUnit::from_str`
@@ -205,14 +268,6 @@ fn main() {
 				"cpuall" => ComputeUnit::CpuAll,
 				"gpu" => ComputeUnit::Gpu,
 				cpun if cpun.starts_with("cpu") => if let Ok(n) = cpun[3..].parse() { ComputeUnit::CpuN(n) } else { continue },
-				_ => continue
-			}
-		};
-		let task: Task = loop {
-			break match prompt_with_name_and_default("Task (Train, Inspect, Play)", "train".to_string()).as_str() {
-				"t" | "train" => Task::Train,
-				"i" | "inspect" => Task::Inspect,
-				"p" | "play" => Task::Play,
 				_ => continue
 			}
 		};
@@ -233,13 +288,7 @@ fn main() {
 		}
 		let create_nn_from: CreateNNFrom = if load_nn_from_file {
 			// TODO(feat): load multiple NNs (multi nn archs support)
-			let mut nns_files = vec![];
-			for entry in std::fs::read_dir(".").unwrap() {
-				let path = entry.unwrap().path();
-				if path.is_file() && path.extension().is_some_and(|ext| ext == NN_FILE_FORMAT_EXT) && path.file_stem().is_some() {
-					nns_files.push(path);
-				}
-			}
+			let mut nns_files = load_nns_files();
 			if !nns_files.is_empty() {
 				nns_files.sort();
 				for (i, nn_file) in nns_files.iter().enumerate() {
@@ -266,9 +315,8 @@ fn main() {
 		let draw_by_points_k = prompt_with_name_and_default("Draw by points K", training_default::DRAW_BY_POINTS_K);
 		// let algo_weights_clamp = prompt_with_name_and_default("Algo weights clamp", training_default::ALGO_WEIGHTS_CLAMP);
 		let algo_weights_clamp = training_default::ALGO_WEIGHTS_CLAMP;
-		Config {
+		ConfigTrain {
 			compute_unit,
-			task,
 			create_nn_from,
 			nns_number,
 			keep_top_nns_frac,
@@ -294,16 +342,6 @@ fn main() {
 			.unwrap();
 	}
 
-	match config.task {
-		Task::Train => {}
-		Task::Inspect => {
-			todo!("load and show NN params/spec");
-		}
-		Task::Play => {
-			todo!();
-		}
-	}
-
 	// TODO(feat): remove `inner_layers_sizes` and use parents params for evo/gen (needed for multi nn archs support)
 	let (inner_layers_sizes, nns) = match config.create_nn_from {
 		CreateNNFrom::InnerLayersSizes(inner_layers_sizes) => {
@@ -312,7 +350,7 @@ fn main() {
 			}))
 		}
 		CreateNNFrom::LoadFile(filename) => {
-			let nn = NN::load_from_file(filename);
+			let nn = NN::load_from_file(&filename);
 			println!("Loaded NN's hash: {}", nn.calc_hash_to_string());
 			// TODO: why slow?
 			(nn.get_inner_layers_sizes(), Vec::from_fn(config.nns_number as usize, |i| {
@@ -1264,7 +1302,7 @@ impl NN {
 	pub fn save_to_file(&self, filename: &str) {
 		std::fs::write(filename, self.to_bytes()).unwrap()
 	}
-	pub fn load_from_file(filename: PathBuf) -> Self {
+	pub fn load_from_file(filename: &Path) -> Self {
 		Self::from_bytes(&std::fs::read(filename).unwrap())
 	}
 	pub fn to_bytes(&self) -> Vec<u8> {
