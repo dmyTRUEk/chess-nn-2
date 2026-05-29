@@ -69,3 +69,14 @@ pub fn prompt_with_name_and_default<T: FromStr + Display>(name: &str, default: T
 	prompt_with_default(&format!("{name} (default: {default}): "), default)
 }
 
+pub fn prompt_bool_with_name_and_default(name: &str, default: bool) -> bool {
+	let default_str = if default { "yes" } else { "no" };
+	loop {
+		break match prompt_with_name_and_default(&format!("{name} (Yes/No)"), default_str.to_string()).as_str() {
+			"y" | "yes" => true,
+			"n" | "no" => false,
+			_ => continue
+		}
+	}
+}
+

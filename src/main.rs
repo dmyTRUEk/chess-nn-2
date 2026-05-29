@@ -128,10 +128,11 @@ struct ConfigTrain {
 	epochs: u32,
 	save_every_n_epochs: Option<u32>,
 	play_game_moves_limit: u32,
-	evolution_rate_init: f,
-	evolution_rate_final: f,
+	use_elo_system: bool,
 	win_by_points_k: f,
 	draw_by_points_k: f,
+	evolution_rate_init: f,
+	evolution_rate_final: f,
 	algo_weights_clamp: f,
 }
 #[derive(Debug)]
@@ -220,13 +221,7 @@ fn main() {
 	match task {
 		Task::Train => { /* continue */ }
 		Task::Inspect => {
-			// let load_nn_from_file: bool = loop {
-			// 	break match prompt_with_name_and_default("Load NN from file (Yes/No)", "yes".to_string()).as_str() {
-			// 		"y" | "yes" => true,
-			// 		"n" | "no" => false,
-			// 		_ => continue
-			// 	}
-			// };
+			// let load_nn_from_file = prompt_bool_with_name_and_default("Load NN from file", true);
 			// TODO(refactor): f2f6ee
 			let mut nns_files = load_nns_files();
 			if nns_files.is_empty() { unimplemented!() }
@@ -400,13 +395,7 @@ fn main() {
 				_ => continue
 			}
 		};
-		let load_nn_from_file: bool = loop {
-			break match prompt_with_name_and_default("Load NN from file (Yes/No)", "yes".to_string()).as_str() {
-				"y" | "yes" => true,
-				"n" | "no" => false,
-				_ => continue
-			}
-		};
+		let load_nn_from_file = prompt_bool_with_name_and_default("Load NN from file", true);
 		fn prompt_inner_layers_sizes() -> Vec<u32> {
 			let inner_layers_sizes_default = nn_default::INNER_LAYERS_SIZES.iter().join(" ");
 			loop {
@@ -439,10 +428,11 @@ fn main() {
 		let save_every_n_epochs = prompt_with_name_and_default("Save every N epochs (0 for never)", training_default::SAVE_EVERY_N_EPOCHS);
 		let save_every_n_epochs = (save_every_n_epochs != 0).then_some(save_every_n_epochs);
 		let play_game_moves_limit = prompt_with_name_and_default("Play game moves limit", training_default::PLAY_GAME_MOVES_LIMIT);
-		let evolution_rate_init = prompt_with_name_and_default("Evolution rate init", training_default::EVOLUTION_RATE_INIT);
-		let evolution_rate_final = prompt_with_name_and_default("Evolution rate final", training_default::EVOLUTION_RATE_FINAL);
+		let use_elo_system = prompt_bool_with_name_and_default("Use ELO system", true);
 		let win_by_points_k = prompt_with_name_and_default("Win by points K", training_default::WIN_BY_POINTS_K);
 		let draw_by_points_k = prompt_with_name_and_default("Draw by points K", training_default::DRAW_BY_POINTS_K);
+		let evolution_rate_init = prompt_with_name_and_default("Evolution rate init", training_default::EVOLUTION_RATE_INIT);
+		let evolution_rate_final = prompt_with_name_and_default("Evolution rate final", training_default::EVOLUTION_RATE_FINAL);
 		// let algo_weights_clamp = prompt_with_name_and_default("Algo weights clamp", training_default::ALGO_WEIGHTS_CLAMP);
 		let algo_weights_clamp = training_default::ALGO_WEIGHTS_CLAMP;
 		ConfigTrain {
@@ -453,10 +443,11 @@ fn main() {
 			epochs,
 			save_every_n_epochs,
 			play_game_moves_limit,
-			evolution_rate_init,
-			evolution_rate_final,
+			use_elo_system,
 			win_by_points_k,
 			draw_by_points_k,
+			evolution_rate_init,
+			evolution_rate_final,
 			algo_weights_clamp,
 		}
 	};
@@ -520,7 +511,11 @@ fn main() {
 
 		play_tournament(&mut players, &mut rng, TournamentParams {
 			moves_limit: config.play_game_moves_limit,
-			update_ratings_params: UpdateRatingsParams { win_by_points_k: config.win_by_points_k, draw_by_points_k: config.draw_by_points_k },
+			update_ratings_params: UpdateRatingsParams {
+				use_elo_system: config.use_elo_system,
+				win_by_points_k: config.win_by_points_k,
+				draw_by_points_k: config.draw_by_points_k,
+			},
 			compute_unit: config.compute_unit,
 		});
 
@@ -784,6 +779,7 @@ fn play_tournament(
 
 #[derive(Debug, Clone, Copy)]
 struct UpdateRatingsParams {
+	use_elo_system: bool,
 	win_by_points_k: f,
 	draw_by_points_k: f,
 }
@@ -795,35 +791,63 @@ fn update_ratings(
 	params: UpdateRatingsParams,
 ) {
 	use GameResult_::*;
-	match game_result {
-		WhiteWins => {
-			let elo_rating_delta = calc_elo_rating_delta(*white, *black);
-			*white += elo_rating_delta;
-			*black -= elo_rating_delta;
+	if params.use_elo_system {
+		match game_result {
+			WhiteWins => {
+				let elo_rating_delta = calc_elo_rating_delta(*white, *black);
+				*white += elo_rating_delta;
+				*black -= elo_rating_delta;
+			}
+			BlackWins => {
+				let elo_rating_delta = calc_elo_rating_delta(*black, *white);
+				*black += elo_rating_delta;
+				*white -= elo_rating_delta;
+			}
+			WhiteWinsByPoints => {
+				let elo_rating_delta = calc_elo_rating_delta(*white, *black) * params.win_by_points_k;
+				*white += elo_rating_delta;
+				*black -= elo_rating_delta;
+			}
+			BlackWinsByPoints => {
+				let elo_rating_delta = calc_elo_rating_delta(*black, *white) * params.win_by_points_k;
+				*black += elo_rating_delta;
+				*white -= elo_rating_delta;
+			}
+			DrawByPoints => {
+				// let elo_rating_delta_1 = calc_elo_rating_delta(*white, *black);
+				// let elo_rating_delta_2 = calc_elo_rating_delta(*black, *white);
+				// let elo_rating_delta = (elo_rating_delta_1 + elo_rating_delta_2) / 2.;
+				// let elo_rating_delta = elo_rating_delta / 1000.;
+				// TODO?
+				*black *= params.draw_by_points_k;
+				*white *= params.draw_by_points_k;
+			}
 		}
-		BlackWins => {
-			let elo_rating_delta = calc_elo_rating_delta(*black, *white);
-			*black += elo_rating_delta;
-			*white -= elo_rating_delta;
-		}
-		WhiteWinsByPoints => {
-			let elo_rating_delta = calc_elo_rating_delta(*white, *black) * params.win_by_points_k;
-			*white += elo_rating_delta;
-			*black -= elo_rating_delta;
-		}
-		BlackWinsByPoints => {
-			let elo_rating_delta = calc_elo_rating_delta(*black, *white) * params.win_by_points_k;
-			*black += elo_rating_delta;
-			*white -= elo_rating_delta;
-		}
-		DrawByPoints => {
-			// let elo_rating_delta_1 = calc_elo_rating_delta(*white, *black);
-			// let elo_rating_delta_2 = calc_elo_rating_delta(*black, *white);
-			// let elo_rating_delta = (elo_rating_delta_1 + elo_rating_delta_2) / 2.;
-			// let elo_rating_delta = elo_rating_delta / 1000.;
-			// TODO?
-			*black *= params.draw_by_points_k;
-			*white *= params.draw_by_points_k;
+	}
+	else {
+		const ELO_RATING_DELTA: f = 10.;
+		match game_result {
+			WhiteWins => {
+				*white += ELO_RATING_DELTA;
+				*black -= ELO_RATING_DELTA;
+			}
+			BlackWins => {
+				*black += ELO_RATING_DELTA;
+				*white -= ELO_RATING_DELTA;
+			}
+			WhiteWinsByPoints => {
+				*white += ELO_RATING_DELTA * params.win_by_points_k;
+				*black -= ELO_RATING_DELTA * params.win_by_points_k;
+			}
+			BlackWinsByPoints => {
+				*black += ELO_RATING_DELTA * params.win_by_points_k;
+				*white -= ELO_RATING_DELTA * params.win_by_points_k;
+			}
+			DrawByPoints => {
+				// TODO?
+				*black *= params.draw_by_points_k;
+				*white *= params.draw_by_points_k;
+			}
 		}
 	}
 }
@@ -2316,24 +2340,24 @@ fn get_pieces_by_color(board: &Board) -> PiecesByColor<Vec<Piece>> {
 mod chess_pieces_ascii {
 	use chess::{Color, Piece};
 
-	pub const NONE: char = '.';
+	const EMPTY: char = '.';
 
-	pub const PAWN_WHITE  : char = 'P';
-	pub const KNIGHT_WHITE: char = 'N';
-	pub const BISHOP_WHITE: char = 'B';
-	pub const ROOK_WHITE  : char = 'R';
-	pub const QUEEN_WHITE : char = 'Q';
-	pub const KING_WHITE  : char = 'K';
+	const PAWN_WHITE  : char = 'P';
+	const KNIGHT_WHITE: char = 'N';
+	const BISHOP_WHITE: char = 'B';
+	const ROOK_WHITE  : char = 'R';
+	const QUEEN_WHITE : char = 'Q';
+	const KING_WHITE  : char = 'K';
 
-	pub const PAWN_BLACK  : char = 'p';
-	pub const KNIGHT_BLACK: char = 'n';
-	pub const BISHOP_BLACK: char = 'b';
-	pub const ROOK_BLACK  : char = 'r';
-	pub const QUEEN_BLACK : char = 'q';
-	pub const KING_BLACK  : char = 'k';
+	const PAWN_BLACK  : char = 'p';
+	const KNIGHT_BLACK: char = 'n';
+	const BISHOP_BLACK: char = 'b';
+	const ROOK_BLACK  : char = 'r';
+	const QUEEN_BLACK : char = 'q';
+	const KING_BLACK  : char = 'k';
 
 	pub fn get(option_piece_and_color: Option<(Piece, Color)>) -> char {
-		let Some(piece_and_color) = option_piece_and_color else { return NONE };
+		let Some(piece_and_color) = option_piece_and_color else { return EMPTY };
 		match piece_and_color {
 			(Piece::Pawn  , Color::White) => PAWN_WHITE,
 			(Piece::Knight, Color::White) => KNIGHT_WHITE,
@@ -2355,26 +2379,26 @@ mod chess_pieces_ascii {
 mod chess_pieces_unicode {
 	use chess::{Color, Piece};
 
-	pub const NONE: char = '.';
+	const EMPTY: char = '.';
 
 	/* ♚♛♜♝♞♟ ♔♕♖♗♘♙ */
 
-	pub const PAWN_WHITE  : char = '♟';
-	pub const KNIGHT_WHITE: char = '♞';
-	pub const BISHOP_WHITE: char = '♝';
-	pub const ROOK_WHITE  : char = '♜';
-	pub const QUEEN_WHITE : char = '♛';
-	pub const KING_WHITE  : char = '♚';
+	const PAWN_WHITE  : char = '♟';
+	const KNIGHT_WHITE: char = '♞';
+	const BISHOP_WHITE: char = '♝';
+	const ROOK_WHITE  : char = '♜';
+	const QUEEN_WHITE : char = '♛';
+	const KING_WHITE  : char = '♚';
 
-	pub const PAWN_BLACK  : char = '♙';
-	pub const KNIGHT_BLACK: char = '♘';
-	pub const BISHOP_BLACK: char = '♗';
-	pub const ROOK_BLACK  : char = '♖';
-	pub const QUEEN_BLACK : char = '♕';
-	pub const KING_BLACK  : char = '♔';
+	const PAWN_BLACK  : char = '♙';
+	const KNIGHT_BLACK: char = '♘';
+	const BISHOP_BLACK: char = '♗';
+	const ROOK_BLACK  : char = '♖';
+	const QUEEN_BLACK : char = '♕';
+	const KING_BLACK  : char = '♔';
 
 	pub fn get(option_piece_and_color: Option<(Piece, Color)>) -> char {
-		let Some(piece_and_color) = option_piece_and_color else { return NONE };
+		let Some(piece_and_color) = option_piece_and_color else { return EMPTY };
 		match piece_and_color {
 			(Piece::Pawn  , Color::White) => PAWN_WHITE,
 			(Piece::Knight, Color::White) => KNIGHT_WHITE,
