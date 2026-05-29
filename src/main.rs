@@ -1015,10 +1015,10 @@ pub enum ActivationFn {
 	Sigmoid,
 	Tanh,
 	SoftSign,
-	// SoftPlus,
+	SoftPlus,
 	ExpLU,
 	SiLU,
-	// ELiSH,
+	ELiSH,
 	Gaussian,
 	Clamp01,
 	ReSqrt, // 0 if x < 0
@@ -1064,8 +1064,8 @@ impl ActivationFn {
 	pub fn new_random(rng: &mut impl RngExt) -> Self {
 		use ActivationFn::*;
 		// assert_eq!(ActivationFn::NUMBER_OF_VARIANTS, VN::NUMBER_OF_VARIANTS);
-		use V25::*;
-		assert_eq!(ActivationFn::get_number_of_variants(), V25::NUMBER_OF_VARIANTS);
+		use V19::*;
+		debug_assert_eq!(ActivationFn::get_number_of_variants(), V27::NUMBER_OF_VARIANTS);
 		match rng.random_variant() {
 			_1 => ReLU,
 			_2 => LeakyReLU_01,
@@ -1086,14 +1086,14 @@ impl ActivationFn {
 			_15 => LeakyReSqrt01,
 			_16 => LeakyReSqrt001,
 			_17 => SignedSqrtP1,
-			_18 => ReSquare,
-			_19 => SignedSquare,
-			_20 => LeakyReSquare01,
-			_21 => LeakyReSquare001,
-			_22 => Sinc,
-			_23 => ReSinc,
-			_24 => Softmax,
-			_25 => Maxout,
+			// _ => ReSquare,
+			// _ => SignedSquare,
+			// _ => LeakyReSquare01,
+			// _ => LeakyReSquare001,
+			_18 => Sinc,
+			_19 => ReSinc,
+			// _ => Softmax,
+			// _ => Maxout,
 		}
 	}
 	pub fn eval(self, xs: DVector<f>) -> DVector<f> {
@@ -1107,10 +1107,10 @@ impl ActivationFn {
 			Sigmoid => xs.map(sigmoid),
 			Tanh => xs.map(tanh),
 			SoftSign => xs.map(soft_sign),
-			// SoftPlus => xs.map(soft_plus),
+			SoftPlus => xs.map(soft_plus),
 			ExpLU => xs.map(explu),
 			SiLU => xs.map(silu),
-			// ELiSH => xs.map(elish),
+			ELiSH => xs.map(elish),
 			Gaussian => xs.map(gaussian),
 			Clamp01 => xs.map(clamp01),
 			ReSqrt => xs.map(resqrt),
@@ -1149,10 +1149,10 @@ impl ActivationFn {
 			Sigmoid => 0x_bf8bd5a3_05d3be95,
 			Tanh => 0x_deba1dd1_d30ee4b3,
 			SoftSign => 0x_e9067194_5163f143,
-			// SoftPlus => 0x_520545ee_98ca6be2,
+			SoftPlus => 0x_520545ee_98ca6be2,
 			ExpLU => 0x_1334fd2f_27429035,
 			SiLU => 0x_c4921e89_35e84654,
-			// ELiSH => 0x_03f8f2c8_37165a17,
+			ELiSH => 0x_03f8f2c8_37165a17,
 			Gaussian => 0x_61424e39_bf3c44a7,
 			Clamp01 => 0x_b35ef484_34e47d87,
 			ReSqrt => 0x_1b969ca2_d42487d6,
@@ -1181,10 +1181,10 @@ impl ActivationFn {
 			0x_bf8bd5a3_05d3be95 => Sigmoid,
 			0x_deba1dd1_d30ee4b3 => Tanh,
 			0x_e9067194_5163f143 => SoftSign,
-			// 0x_520545ee_98ca6be2 => SoftPlus,
+			0x_520545ee_98ca6be2 => SoftPlus,
 			0x_1334fd2f_27429035 => ExpLU,
 			0x_c4921e89_35e84654 => SiLU,
-			// 0x_03f8f2c8_37165a17 => ELiSH,
+			0x_03f8f2c8_37165a17 => ELiSH,
 			0x_61424e39_bf3c44a7 => Gaussian,
 			0x_b35ef484_34e47d87 => Clamp01,
 			0x_1b969ca2_d42487d6 => ReSqrt,
