@@ -198,7 +198,9 @@ def update_plot(frame=None):
 		)
 
 	ax.set_xlim(0, epochs_n)
-	ax.set_ylim(1000, 1500)
+
+	max_rating = max(rating for epoch in epochs for rating,_name in epoch)
+	ax.set_ylim(1000, 1000 + (max_rating-1000) * 1.3)
 
 	ax.set_xlabel("epoch number")
 	ax.set_ylabel("rating")
