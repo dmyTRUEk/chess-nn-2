@@ -24,7 +24,7 @@
 	clippy::upper_case_acronyms,
 )]
 
-use std::{cmp::Ordering, path::{Path, PathBuf}, str::FromStr, time::Instant};
+use std::{cmp::Ordering, collections::HashMap, path::{Path, PathBuf}, str::FromStr, sync::OnceLock, time::Instant};
 
 use chess::{ALL_SQUARES, Action, Board, BoardBuilder, ChessMove, Color, Game, GameResult, MoveGen, Piece};
 use chrono::Local;
@@ -87,6 +87,7 @@ mod nn_default {
 	// pub const INNER_LAYERS_SIZES: &[u32] = &[30, 10, 5]; // for tests
 
 	pub const EXTRA_NOISE_INPUT: bool = false;
+	pub const EXTRA_STM_INPUT: bool = false; // TODO
 	// pub const NUMBER_OF_DEPTH_CHANNELS: NumberOfDepthChannels = NumberOfDepthChannels::Two;
 	// pub const NUMBER_OF_DEPTH_CHANNELS: NumberOfDepthChannels = NumberOfDepthChannels::Three { use_opposite_signs: false };
 	pub const NUMBER_OF_DEPTH_CHANNELS: NumberOfDepthChannels = NumberOfDepthChannels::Four;
@@ -115,8 +116,9 @@ pub const NN_FILE_FORMAT_MAGIC: u64 = 0x_066262e3_145aaa67;
 #[derive(Debug)]
 enum Task {
 	Train,
-	Inspect,
 	Play,
+	Inspect,
+	ExportAsImages,
 }
 
 #[derive(Debug)]
@@ -150,6 +152,14 @@ fn main() {
 
 	debug_assert_eq!(1, nn_default::OUTPUT_SIZE);
 
+	OPENINGS_BEST_MOVES.set({
+		let openings_best_moves_text = include_str!("./openings_best_moves_3_0.05.txt");
+		HashMap::from_iter(
+			openings_best_moves_text.split('\n').array_chunks()
+				.map(|[fen, move_]| (Board::from_fen(fen.to_string()).unwrap(), ChessMove::from_str(move_).unwrap()))
+		)
+	}).unwrap();
+
 	let mut rng = rng();
 
 	// TODO: print all params
@@ -169,13 +179,18 @@ fn main() {
 		PiecesFreedomDiffSTM,
 		NegPiecesFreedomDiff,
 		NegPiecesFreedomDiffSTM,
-		AlgoPlayer::mix_new_random(&mut rng), // one to survive
-		AlgoPlayer::mix_new_random(&mut rng), // and one to evolve
-		AlgoPlayer::mix_uss_new_random(&mut rng),
-		AlgoPlayer::mix_uss_new_random(&mut rng),
+		AlgoPlayer::new_random_mix(&mut rng), // one to survive
+		AlgoPlayer::new_random_mix(&mut rng), // and one to evolve
+		AlgoPlayer::new_random_mix_uss(&mut rng),
+		AlgoPlayer::new_random_mix_uss(&mut rng),
 	]};
 
 	let mut players = algo_players.map(Player::Algo).to_vec();
+
+	players.push(Player::AlgoWithOpenings(AlgoPlayer::new_random_mix(&mut rng)));
+	players.push(Player::AlgoWithOpenings(AlgoPlayer::new_random_mix(&mut rng)));
+	players.push(Player::AlgoWithOpenings(AlgoPlayer::new_random_mix_uss(&mut rng)));
+	players.push(Player::AlgoWithOpenings(AlgoPlayer::new_random_mix_uss(&mut rng)));
 
 	// {
 	// 	let fen = (
@@ -199,10 +214,11 @@ fn main() {
 	// return;
 
 	let task: Task = loop {
-		break match prompt_with_name_and_default("Task (Train, Inspect, Play)", "train".to_string()).as_str() {
+		break match prompt_with_name_and_default("Task (Train, Play, Inspect, Export as images)", "train".to_string()).as_str() {
 			"t" | "train" => Task::Train,
-			"i" | "inspect" => Task::Inspect,
 			"p" | "play" => Task::Play,
+			"i" | "inspect" => Task::Inspect,
+			"e" | "export" => Task::ExportAsImages,
 			_ => continue
 		}
 	};
@@ -239,6 +255,10 @@ fn main() {
 			println!();
 			println!("activation fns: {:#?}", nn.get_activation_fns());
 			// TODO: more?
+			return
+		}
+		Task::ExportAsImages => {
+			todo!();
 			return
 		}
 		Task::Play => {
@@ -428,7 +448,7 @@ fn main() {
 		let save_every_n_epochs = prompt_with_name_and_default("Save every N epochs (0 for never)", training_default::SAVE_EVERY_N_EPOCHS);
 		let save_every_n_epochs = (save_every_n_epochs != 0).then_some(save_every_n_epochs);
 		let play_game_moves_limit = prompt_with_name_and_default("Play game moves limit", training_default::PLAY_GAME_MOVES_LIMIT);
-		let use_elo_system = prompt_bool_with_name_and_default("Use ELO system", true);
+		let use_elo_system = prompt_bool_with_name_and_default("Use ELO system", false);
 		let win_by_points_k = prompt_with_name_and_default("Win by points K", training_default::WIN_BY_POINTS_K);
 		let draw_by_points_k = prompt_with_name_and_default("Draw by points K", training_default::DRAW_BY_POINTS_K);
 		let evolution_rate_init = prompt_with_name_and_default("Evolution rate init", training_default::EVOLUTION_RATE_INIT);
@@ -536,7 +556,7 @@ fn main() {
 
 		println!();
 
-		{
+		{ // print games
 			let play_game_params = PlayGameParams {
 				moves_limit: config.play_game_moves_limit,
 				print_players_moves_scores: false,
@@ -635,7 +655,7 @@ fn main() {
 				if i == index_of_best_algo_mix { continue }
 				if players[i].rating < DEFAULT_RATING {
 					if rng.random_bool(0.1) {
-						players[i] = PlayerWithRatingAndStats::new(Player::Algo(AlgoPlayer::mix_new_random(&mut rng)));
+						players[i] = PlayerWithRatingAndStats::new(Player::Algo(AlgoPlayer::new_random_mix(&mut rng)));
 						continue // dont evolve
 					} else {
 						players[i] = players[index_of_best_algo_mix].clone();
@@ -653,7 +673,7 @@ fn main() {
 				if i == index_of_best_algo_mix_uss { continue }
 				if players[i].rating < DEFAULT_RATING {
 					if rng.random_bool(0.1) {
-						players[i] = PlayerWithRatingAndStats::new(Player::Algo(AlgoPlayer::mix_uss_new_random(&mut rng)));
+						players[i] = PlayerWithRatingAndStats::new(Player::Algo(AlgoPlayer::new_random_mix_uss(&mut rng)));
 						continue // dont evolve
 					} else {
 						players[i] = players[index_of_best_algo_mix_uss].clone();
@@ -1273,6 +1293,7 @@ enum Player {
 	NN(NN),
 	// NNFromSeed { seed: u64 }, // TODO
 	Algo(AlgoPlayer),
+	AlgoWithOpenings(AlgoPlayer),
 	Human { name: String },
 }
 impl Player {
@@ -1281,6 +1302,7 @@ impl Player {
 		match self {
 			NN(nn) => format!("NN {}", nn.calc_hash_to_string()),
 			Algo(algo) => algo.get_name(),
+			AlgoWithOpenings(algo) => format!("op {}", algo.get_name()),
 			Human { name } => name.clone(),
 		}
 	}
@@ -1299,13 +1321,14 @@ impl Player {
 			NN(nn) => {
 				nn.evolve(evolution_rate, rng);
 			}
-			Algo(AlgoPlayer::Mix(mix)) => {
-				mix.evolve(evolution_rate, rng, algo_weights_clamp);
-			}
-			Algo(AlgoPlayer::MixUnderSignedSqrt(mix)) => {
+			Algo(AlgoPlayer::Mix(mix))
+			| Algo(AlgoPlayer::MixUnderSignedSqrt(mix))
+			| AlgoWithOpenings(AlgoPlayer::Mix(mix))
+			| AlgoWithOpenings(AlgoPlayer::MixUnderSignedSqrt(mix)) => {
 				mix.evolve(evolution_rate, rng, algo_weights_clamp);
 			}
 			Algo(_) => {}
+			AlgoWithOpenings(_) => {}
 			Human { name: _ } => {}
 		}
 	}
@@ -1316,6 +1339,11 @@ impl SelectMove for Player {
 		match self {
 			NN(nn) => nn.select_move(board, rng, params),
 			Algo(algo) => algo.select_move(board, rng, params),
+			AlgoWithOpenings(algo) => {
+				get_best_move_in_opening(board)
+					.map(|move_| (move_, None))
+					.unwrap_or_else(|| algo.select_move(board, rng, params))
+			}
 			Human { name } => {
 				println!();
 				println!("{}", board_to_human_viewable(board, BoardToHumanViewableConfig::all()));
@@ -1729,6 +1757,7 @@ fn evolve_value(v: &mut f, rng: &mut impl RngExt) {
 // TODO: test
 fn board_to_vector_for_nn(board: &Board) -> Vec<f> {
 	if nn_default::EXTRA_NOISE_INPUT { todo!() }
+	if nn_default::EXTRA_STM_INPUT { todo!() }
 	let mut result: Vec<f> = vec![0.; nn_default::INPUT_SIZE as usize];
 	let board_builder: BoardBuilder = board.into();
 	for (index_in_64, square) in ALL_SQUARES.into_iter().enumerate() {
@@ -1827,10 +1856,10 @@ enum AlgoPlayer {
 	MixUnderSignedSqrt(AlgoPlayerMix),
 }
 impl AlgoPlayer {
-	pub fn mix_new_random(rng: &mut impl RngExt) -> Self {
+	pub fn new_random_mix(rng: &mut impl RngExt) -> Self {
 		Self::Mix(AlgoPlayerMix::new_random(rng))
 	}
-	pub fn mix_uss_new_random(rng: &mut impl RngExt) -> Self {
+	pub fn new_random_mix_uss(rng: &mut impl RngExt) -> Self {
 		Self::MixUnderSignedSqrt(AlgoPlayerMix::new_random(rng))
 	}
 	pub fn eval_board(self, board: &Board, rng: &mut impl RngExt) -> f {
@@ -2096,6 +2125,14 @@ impl ToString for AlgoPlayerMix {
 		if neg_pieces_freedom_diff_stm != 0. { parts.push(format!("neg_pieces_freedom_diff_stm{sep}{neg_pieces_freedom_diff_stm:.2}")); }
 		parts.join(", ")
 	}
+}
+
+
+
+static OPENINGS_BEST_MOVES: OnceLock<HashMap<Board, ChessMove>> = OnceLock::new();
+
+pub fn get_best_move_in_opening(board: &Board) -> Option<ChessMove> {
+	OPENINGS_BEST_MOVES.get().unwrap().get(board).copied()
 }
 
 
