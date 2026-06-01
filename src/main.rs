@@ -13,6 +13,7 @@
 	clippy::let_unit_value,
 	clippy::match_overlapping_arm,
 	clippy::unusual_byte_groupings,
+	clippy::zombie_processes,
 )]
 
 #![allow(
@@ -24,7 +25,7 @@
 	clippy::upper_case_acronyms,
 )]
 
-use std::{cmp::Ordering, collections::HashMap, path::{Path, PathBuf}, str::FromStr, sync::OnceLock, time::Instant};
+use std::{cmp::Ordering, collections::HashMap, io::{BufRead, BufReader, Write}, path::{Path, PathBuf}, process::{Command, Stdio}, str::FromStr, sync::OnceLock, time::Instant};
 
 use chess::{ALL_SQUARES, Action, Board, BoardBuilder, ChessMove, Color, Game, GameResult, MoveGen, Piece};
 use chrono::Local;
@@ -109,6 +110,8 @@ mod nn_default {
 pub const NN_FILE_FORMAT_EXT: &str = "nn";
 pub const NN_FILE_FORMAT_MAGIC: u64 = 0x_066262e3_145aaa67;
 
+pub const STOCKFISH_SEARCH_TIME_MS: u32 = 10;
+
 
 
 
@@ -184,13 +187,14 @@ fn main() {
 		AlgoPlayer::new_random_mix_uss(&mut rng),
 		AlgoPlayer::new_random_mix_uss(&mut rng),
 	]};
-
-	let mut players = algo_players.map(Player::Algo).to_vec();
+	let mut players: Vec<Player> = algo_players.map(Player::Algo).into();
 
 	players.push(Player::AlgoWithOpenings(AlgoPlayer::new_random_mix(&mut rng)));
 	players.push(Player::AlgoWithOpenings(AlgoPlayer::new_random_mix(&mut rng)));
 	players.push(Player::AlgoWithOpenings(AlgoPlayer::new_random_mix_uss(&mut rng)));
 	players.push(Player::AlgoWithOpenings(AlgoPlayer::new_random_mix_uss(&mut rng)));
+
+	players.push(Player::Stockfish(StockfishWrapper::new()));
 
 	// {
 	// 	let fen = (
@@ -624,13 +628,13 @@ fn main() {
 				if nns_i < keep_top_n_nns { continue }
 				let player_to_clone = &players[i - keep_top_n_nns];
 				if player_to_clone.player.is_nn() {
-					players[i] = player_to_clone.clone();
+					players[i] = player_to_clone.try_clone().unwrap();
 				} else {
 					if rng.random_bool(0.1) {
 						players[i] = PlayerWithRatingAndStats::new(Player::NN(NN::new_random(&inner_layers_sizes, &mut rng)));
 						continue // dont evolve
 					} else {
-						players[i] = players[index_of_best_nn].clone();
+						players[i] = players[index_of_best_nn].try_clone().unwrap();
 						// TODO(feat): mix two nns
 					}
 				}
@@ -658,7 +662,7 @@ fn main() {
 						players[i] = PlayerWithRatingAndStats::new(Player::Algo(AlgoPlayer::new_random_mix(&mut rng)));
 						continue // dont evolve
 					} else {
-						players[i] = players[index_of_best_algo_mix].clone();
+						players[i] = players[index_of_best_algo_mix].try_clone().unwrap();
 					};
 				}
 				players[i].player.evolve(get_random_evo_rate!(), &mut rng, config.algo_weights_clamp);
@@ -676,7 +680,7 @@ fn main() {
 						players[i] = PlayerWithRatingAndStats::new(Player::Algo(AlgoPlayer::new_random_mix_uss(&mut rng)));
 						continue // dont evolve
 					} else {
-						players[i] = players[index_of_best_algo_mix_uss].clone();
+						players[i] = players[index_of_best_algo_mix_uss].try_clone().unwrap();
 					};
 				}
 				players[i].player.evolve(get_random_evo_rate!(), &mut rng, config.algo_weights_clamp);
@@ -901,7 +905,7 @@ fn calc_elo_rating_delta(winner: f, loser: f) -> f {
 	100. / ( 1. + 10_f32.powf( (winner-loser) / 400. ) )
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct PlayerInTournamentStats { wins: u32, loses: u32, wins_by_points: u32, loses_by_points: u32, draws_by_points: u32 }
 impl PlayerInTournamentStats {
 	fn new() -> Self { Self { wins: 0, loses: 0, wins_by_points: 0, loses_by_points: 0, draws_by_points: 0 } }
@@ -1287,13 +1291,13 @@ trait SelectMove {
 
 
 
-#[derive(Clone)]
 #[repr(u8)]
 enum Player {
 	NN(NN),
 	// NNFromSeed { seed: u64 }, // TODO
 	Algo(AlgoPlayer),
 	AlgoWithOpenings(AlgoPlayer),
+	Stockfish(StockfishWrapper),
 	Human { name: String },
 }
 impl Player {
@@ -1303,6 +1307,7 @@ impl Player {
 			NN(nn) => format!("NN {}", nn.calc_hash_to_string()),
 			Algo(algo) => algo.get_name(),
 			AlgoWithOpenings(algo) => format!("op {}", algo.get_name()),
+			Stockfish(_) => "Stockfish".to_string(),
 			Human { name } => name.clone(),
 		}
 	}
@@ -1314,6 +1319,9 @@ impl Player {
 	}
 	pub fn is_algo_mix_uss(&self) -> bool {
 		matches!(self, Player::Algo(AlgoPlayer::MixUnderSignedSqrt(_)))
+	}
+	pub fn is_stockfish(&self) -> bool {
+		matches!(self, Player::Stockfish(_))
 	}
 	pub fn evolve(&mut self, evolution_rate: f, rng: &mut impl RngExt, algo_weights_clamp: f) {
 		use Player::*;
@@ -1329,6 +1337,7 @@ impl Player {
 			}
 			Algo(_) => {}
 			AlgoWithOpenings(_) => {}
+			Stockfish(_) => {}
 			Human { name: _ } => {}
 		}
 	}
@@ -1344,6 +1353,7 @@ impl SelectMove for Player {
 					.map(|move_| (move_, None))
 					.unwrap_or_else(|| algo.select_move(board, rng, params))
 			}
+			Stockfish(stockfish_wrapper) => stockfish_wrapper.select_move(board, rng, params),
 			Human { name } => {
 				println!();
 				println!("{}", board_to_human_viewable(board, BoardToHumanViewableConfig::all()));
@@ -1364,8 +1374,20 @@ impl SelectMove for Player {
 		}
 	}
 }
+trait TryClone { fn try_clone(&self) -> Option<Self> where Self: Sized; }
+impl TryClone for Player {
+	fn try_clone(&self) -> Option<Self> {
+		use Player::*;
+		Some(match self {
+			NN(nn) => NN(nn.clone()),
+			Algo(algo) => Algo(*algo),
+			AlgoWithOpenings(algo) => AlgoWithOpenings(*algo),
+			Stockfish(_) => return None,
+			Human { name } => Human { name: name.clone() }
+		})
+	}
+}
 
-#[derive(Clone)]
 struct PlayerWithRatingAndStats {
 	player: Player,
 	rating: f,
@@ -1375,6 +1397,15 @@ struct PlayerWithRatingAndStats {
 impl PlayerWithRatingAndStats {
 	pub fn new(player: Player) -> PlayerWithRatingAndStats {
 		Self { player, rating: DEFAULT_RATING, stats: PlayerInTournamentStats::new() }
+	}
+}
+impl TryClone for PlayerWithRatingAndStats {
+	fn try_clone(&self) -> Option<Self> where Self: Sized {
+		Some(Self {
+			player: self.player.try_clone()?,
+			rating: self.rating,
+			stats: self.stats,
+		})
 	}
 }
 // #[derive(Debug, Clone, Copy)]
@@ -2133,6 +2164,77 @@ static OPENINGS_BEST_MOVES: OnceLock<HashMap<Board, ChessMove>> = OnceLock::new(
 
 pub fn get_best_move_in_opening(board: &Board) -> Option<ChessMove> {
 	OPENINGS_BEST_MOVES.get().unwrap().get(board).copied()
+}
+
+
+
+
+
+pub struct StockfishWrapper {
+	// child: Child,
+	search_time_ms: u32,
+}
+impl StockfishWrapper {
+	fn new() -> Self {
+		// let child = Command::new("stockfish")
+		// 	.stdin(Stdio::piped())
+		// 	.stdout(Stdio::piped())
+		// 	.spawn()
+		// 	.expect("failed to start stockfish");
+		// Self { child }
+		Self { search_time_ms: STOCKFISH_SEARCH_TIME_MS }
+	}
+}
+impl SelectMove for StockfishWrapper {
+	fn select_move(&self, board: &Board, _rng: &mut impl RngExt, _params: SelectMoveParams) -> (ChessMove, Option<Vec<(ChessMove, f)>>) {
+		// TODO(optim)!: dont spawn new process every time?
+		// credit: chatgpt
+		let mut child = Command::new("stockfish")
+			.stdin(Stdio::piped())
+			.stdout(Stdio::piped())
+			.spawn()
+			.expect("failed to start stockfish");
+		let mut stdin = child.stdin.take().unwrap();
+		let stdout = child.stdout.take().unwrap();
+		let mut reader = BufReader::new(stdout);
+		// TODO(optim)?
+		let mut send = |cmd: &str| {
+			stdin.write_all(cmd.as_bytes()).unwrap();
+			stdin.write_all(b"\n").unwrap();
+			stdin.flush().unwrap();
+		};
+
+		// init UCI
+		send("uci");
+		send("isready");
+
+		let mut line = String::new();
+		loop {
+			line.clear();
+			let _ = reader.read_line(&mut line).unwrap();
+			if line.trim() == "readyok" { break }
+		}
+
+		send(&format!("position fen {board}"));
+		send(&format!("go movetime {}", self.search_time_ms));
+
+		let bestmove_str = loop {
+			line.clear();
+			let _ = reader.read_line(&mut line).unwrap();
+			if line.starts_with("bestmove") { break line.clone() }
+		};
+		// bestmove_str: `bestmove d7d5 ponder g2g3`
+		let (_, tmp) = bestmove_str.split_once(" ").unwrap();
+		let (bestmove_str, _) = tmp.split_once(" ").unwrap_or((tmp, ""));
+		let bestmove_str = bestmove_str.trim();
+		let bestmove = ChessMove::from_str(bestmove_str).unwrap_or_else(|e| panic!("error: {e}\nbestmove_str: `{bestmove_str}`"));
+
+		drop(stdin);
+		drop(reader);
+		let _ = child.wait().unwrap();
+
+		(bestmove, None)
+	}
 }
 
 
