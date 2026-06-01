@@ -156,7 +156,7 @@ fn main() {
 	debug_assert_eq!(1, nn_default::OUTPUT_SIZE);
 
 	OPENINGS_BEST_MOVES.set({
-		let openings_best_moves_text = include_str!("./openings_best_moves_3_0.05.txt");
+		let openings_best_moves_text = include_str!("./openings_best_moves_4_0.05.txt");
 		HashMap::from_iter(
 			openings_best_moves_text.split('\n').array_chunks()
 				.map(|[fen, move_]| (Board::from_fen(fen.to_string()).unwrap(), ChessMove::from_str(move_).unwrap()))
