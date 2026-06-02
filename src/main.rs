@@ -164,7 +164,7 @@ fn main() {
 		)
 	}).unwrap();
 
-	// let white = Player::Stockfish(StockfishWrapper::new());
+	// let white = Player::Stockfish(StockfishWrapper::new(STOCKFISH_SEARCH_TIME_MS));
 	// let black = Player::AlgoWithOpenings(AlgoPlayer::MixUnderSignedSqrt(AlgoPlayerMix { random_mover: 0.01, material_delta: 0., material_delta_stm: 0., neg_material_delta: 0., neg_material_delta_stm: 0., pieces_freedom: 0., pieces_freedom_stm: 0., neg_pieces_freedom: 0., neg_pieces_freedom_stm: 0., pieces_freedom_diff: 0., pieces_freedom_diff_stm: 0., neg_pieces_freedom_diff: 0., neg_pieces_freedom_diff_stm: 0. }));
 	// let (game_result, Some(game)) = play_game(&white, &black, PlayGameParams { moves_limit: training_default::PLAY_GAME_MOVES_LIMIT, print_players_moves_scores: false, get_game: true }) else { unreachable!() };
 	// println!("{game_result:?}");
@@ -202,7 +202,7 @@ fn main() {
 	players.push(Player::AlgoWithOpenings(AlgoPlayer::new_random_mix_uss(&mut rng)));
 	players.push(Player::AlgoWithOpenings(AlgoPlayer::new_random_mix_uss(&mut rng)));
 
-	players.push(Player::Stockfish(StockfishWrapper::new()));
+	players.push(Player::Stockfish(StockfishWrapper::new(STOCKFISH_SEARCH_TIME_MS)));
 
 	// {
 	// 	let fen = (
@@ -2195,14 +2195,14 @@ pub struct StockfishWrapper {
 	search_time_ms: u32,
 }
 impl StockfishWrapper {
-	fn new() -> Self {
+	fn new(search_time_ms: u32) -> Self {
 		// let child = Command::new("stockfish")
 		// 	.stdin(Stdio::piped())
 		// 	.stdout(Stdio::piped())
 		// 	.spawn()
 		// 	.expect("failed to start stockfish");
 		// Self { child }
-		Self { search_time_ms: STOCKFISH_SEARCH_TIME_MS }
+		Self { search_time_ms }
 	}
 }
 impl SelectMove for StockfishWrapper {
