@@ -1327,7 +1327,7 @@ impl Player {
 			NN(nn) => format!("NN {}", nn.calc_hash_to_string()),
 			Algo(algo) => algo.get_name(),
 			AlgoWithOpenings(algo) => format!("op {}", algo.get_name()),
-			Stockfish(_) => "Stockfish".to_string(),
+			Stockfish(stockfish_wrapper) => stockfish_wrapper.get_name(),
 			Human { name } => name.clone(),
 		}
 	}
@@ -2195,7 +2195,7 @@ pub struct StockfishWrapper {
 	search_time_ms: u32,
 }
 impl StockfishWrapper {
-	fn new(search_time_ms: u32) -> Self {
+	pub fn new(search_time_ms: u32) -> Self {
 		// let child = Command::new("stockfish")
 		// 	.stdin(Stdio::piped())
 		// 	.stdout(Stdio::piped())
@@ -2203,6 +2203,9 @@ impl StockfishWrapper {
 		// 	.expect("failed to start stockfish");
 		// Self { child }
 		Self { search_time_ms }
+	}
+	pub fn get_name(&self) -> String {
+		format!("Stockfish ({} ms)", self.search_time_ms)
 	}
 }
 impl SelectMove for StockfishWrapper {
