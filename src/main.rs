@@ -6,6 +6,7 @@
 )]
 
 #![deny(
+	irrefutable_let_patterns,
 	unreachable_patterns,
 	unused_must_use,
 	unused_results,
@@ -162,6 +163,13 @@ fn main() {
 				.map(|[fen, move_]| (Board::from_fen(fen.to_string()).unwrap(), ChessMove::from_str(move_).unwrap()))
 		)
 	}).unwrap();
+
+	// let white = Player::Stockfish(StockfishWrapper::new());
+	// let black = Player::AlgoWithOpenings(AlgoPlayer::MixUnderSignedSqrt(AlgoPlayerMix { random_mover: 0.01, material_delta: 0., material_delta_stm: 0., neg_material_delta: 0., neg_material_delta_stm: 0., pieces_freedom: 0., pieces_freedom_stm: 0., neg_pieces_freedom: 0., neg_pieces_freedom_stm: 0., pieces_freedom_diff: 0., pieces_freedom_diff_stm: 0., neg_pieces_freedom_diff: 0., neg_pieces_freedom_diff_stm: 0. }));
+	// let (game_result, Some(game)) = play_game(&white, &black, PlayGameParams { moves_limit: training_default::PLAY_GAME_MOVES_LIMIT, print_players_moves_scores: false, get_game: true }) else { unreachable!() };
+	// println!("{game_result:?}");
+	// println!("{}", game.to_uci());
+	// return;
 
 	let mut rng = rng();
 
@@ -392,11 +400,10 @@ fn main() {
 
 			let moves_limit = prompt_with_name_and_default("Play game moves limit", training_default::PLAY_GAME_MOVES_LIMIT);
 
-			let (game_result, Some(game)) = play_game(&player_white, &player_black, PlayGameParams {
+			let (game_result, game) = play_game(&player_white, &player_black, PlayGameParams {
 				moves_limit,
 				print_players_moves_scores: true,
-				get_game: true,
-			}) else { unreachable!() };
+			});
 			println!();
 			println!("{}", board_to_human_viewable(&game.current_position(), BoardToHumanViewableConfig::all()));
 			println!();
@@ -564,19 +571,18 @@ fn main() {
 			let play_game_params = PlayGameParams {
 				moves_limit: config.play_game_moves_limit,
 				print_players_moves_scores: false,
-				get_game: true,
 			};
 			{ // best NN vs best
 				let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
 				let black = &players[0].player;
-				let (game_result, Some(game)) = play_game(white, black, play_game_params) else { unreachable!() };
+				let (game_result, game) = play_game(white, black, play_game_params);
 				println!("best NN vs best ({}):   {}", game_result.to_char(), game.to_uci());
 			}
 			println!();
 			{ // best NN vs self
 				let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
 				let black = white;
-				let (game_result, Some(game)) = play_game(white, black, play_game_params) else { unreachable!() };
+				let (game_result, game) = play_game(white, black, play_game_params);
 				println!("best NN vs self ({}):   {}", game_result.to_char(), game.to_uci());
 			}
 			println!();
@@ -586,21 +592,21 @@ fn main() {
 					.k_largest_by(2, |p1, p2| p1.rating.partial_cmp(&p2.rating).unwrap())
 					.map(|p| &p.player)
 					.collect::<Vec<_>>()[..] else { unreachable!() };
-				let (game_result, Some(game)) = play_game(white, black, play_game_params) else { unreachable!() };
+				let (game_result, game) = play_game(white, black, play_game_params);
 				println!("best NN vs second best NN ({}):   {}", game_result.to_char(), game.to_uci());
 			}
 			println!();
 			{ // best NN vs worst NN
 				let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
 				let black = &players.iter().rev().find(|p| p.player.is_nn()).unwrap().player;
-				let (game_result, Some(game)) = play_game(white, black, play_game_params) else { unreachable!() };
+				let (game_result, game) = play_game(white, black, play_game_params);
 				println!("best NN vs worst NN ({}):   {}", game_result.to_char(), game.to_uci());
 			}
 			println!();
 			{ // best NN vs worst
 				let white = &players.iter().find(|p| p.player.is_nn()).unwrap().player;
 				let black = &players[players.len()-1].player;
-				let (game_result, Some(game)) = play_game(white, black, play_game_params) else { unreachable!() };
+				let (game_result, game) = play_game(white, black, play_game_params);
 				println!("best NN vs worst ({}):   {}", game_result.to_char(), game.to_uci());
 			}
 		}
@@ -733,7 +739,6 @@ fn play_tournament(
 	let play_game_params = PlayGameParams {
 		moves_limit: params.moves_limit,
 		print_players_moves_scores: false,
-		get_game: false,
 	};
 	match params.compute_unit {
 		ComputeUnit::CpuOne => {
@@ -766,7 +771,7 @@ fn play_tournament(
 				.par_bridge()
 				.map(|(white_i, black_i)| {
 					if white_i == black_i { return None }
-					let (game_result, _) = play_game(&players_ref[white_i].player, &players_ref[black_i].player, play_game_params);
+					let (game_result, _game) = play_game(&players_ref[white_i].player, &players_ref[black_i].player, play_game_params);
 					print(game_result.to_char());
 					Some((white_i, black_i, game_result))
 				})
@@ -791,6 +796,14 @@ fn play_tournament(
 				let [white, black] = players.get_disjoint_mut([white_i, black_i]).unwrap();
 				update_stats(&mut white.stats, &mut black.stats, game_result);
 				update_ratings(&mut white.rating, &mut black.rating, game_result, params.update_ratings_params);
+				// if (white.player.is_stockfish() || black.player.is_stockfish()) && game_result.is_by_points() {
+				// 	println!("STOCKFISH DIDNT WIN");
+				// 	println!("white: {}", white.player.name());
+				// 	println!("black: {}", black.player.name());
+				// 	println!("game_result: {game_result:?}");
+				// 	println!("game: {}", game.to_uci());
+				// 	panic!();
+				// }
 			}
 		}
 		ComputeUnit::Gpu => {
@@ -917,10 +930,9 @@ impl PlayerInTournamentStats {
 struct PlayGameParams {
 	moves_limit: u32,
 	print_players_moves_scores: bool,
-	get_game: bool,
 }
 
-fn play_game(white: &Player, black: &Player, params: PlayGameParams) -> (GameResult_, Option<Game>) {
+fn play_game(white: &Player, black: &Player, params: PlayGameParams) -> (GameResult_, Game) {
 	let mut rng = rng();
 	let mut game = Game::new(); // TODO(optim): dont use Game, use Board directly
 	let mut move_number: u32 = 0;
@@ -969,7 +981,7 @@ fn play_game(white: &Player, black: &Player, params: PlayGameParams) -> (GameRes
 			Ordering::Greater => GameResult_::WhiteWinsByPoints,
 		}
 	};
-	(gr, params.get_game.then_some(game))
+	(gr, game)
 }
 
 pub trait BoardCountMaterialDelta { fn count_material_delta(self) -> f; }
@@ -1023,9 +1035,9 @@ impl ColorToSign for Color {
 
 
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
-enum GameResult_ {
+pub enum GameResult_ {
 	WhiteWins,
 	BlackWins,
 	// Draw,
@@ -1034,6 +1046,14 @@ enum GameResult_ {
 	DrawByPoints,
 }
 impl GameResult_ {
+	pub fn is_real(self) -> bool {
+		use GameResult_::*;
+		matches!(self, WhiteWins | BlackWins)
+	}
+	pub fn is_by_points(self) -> bool {
+		use GameResult_::*;
+		matches!(self, WhiteWinsByPoints | BlackWinsByPoints | DrawByPoints)
+	}
 	pub fn to_char(self) -> char {
 		use GameResult_::*;
 		match self {
